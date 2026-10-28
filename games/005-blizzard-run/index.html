@@ -1,0 +1,835 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>ブリザード・ラン</title>
+<style>
+  html,body{margin:0;height:100%;background:#0e1a2b;overflow:hidden;touch-action:none;
+    font-family:system-ui,-apple-system,"Hiragino Sans","Noto Sans CJK JP","Noto Sans JP",sans-serif;
+    -webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
+  canvas{display:block;width:100vw;height:100vh}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+"use strict";
+// ============================================================
+//  ブリザード・ラン — 吹雪から逃げるマッチ3パズル
+//  結晶を入れ替えて3つ以上そろえると前に進む。吹雪に追いつかれたら終わり。
+//  画像ファイルなし：すべてコードで描画
+// ============================================================
+const cv = document.getElementById("c");
+const ctx = cv.getContext("2d");
+const FONT = 'system-ui,-apple-system,"Hiragino Sans","Noto Sans CJK JP","Noto Sans JP",sans-serif';
+
+let W = 0, H = 0, DPR = 1;
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = innerWidth; H = innerHeight;
+  cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
+  gemCache = {};
+}
+addEventListener("resize", resize);
+
+// ---------- ユーティリティ ----------
+function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+function rand(a, b) { return a + Math.random() * (b - a); }
+function randi(n) { return Math.floor(Math.random() * n); }
+function pick(a) { return a[randi(a.length)]; }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function rr(c, x, y, w, h, r) {
+  r = Math.min(r, w / 2, h / 2);
+  c.beginPath();
+  c.moveTo(x + r, y);
+  c.arcTo(x + w, y, x + w, y + h, r);
+  c.arcTo(x + w, y + h, x, y + h, r);
+  c.arcTo(x, y + h, x, y, r);
+  c.arcTo(x, y, x + w, y, r);
+  c.closePath();
+}
+function txt(s, x, y, size, color, align = "center", weight = 700) {
+  ctx.font = `${weight} ${size}px ${FONT}`;
+  ctx.fillStyle = color; ctx.textAlign = align; ctx.textBaseline = "middle";
+  ctx.fillText(s, x, y);
+}
+function inRect(px, py, r) { return r && px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h; }
+
+// ---------- 定数 ----------
+const N = 7;                 // 盤面のサイズ（7×7）
+const COLORS = [
+  { base: "#5fe0ff", light: "#d8f8ff", dark: "#138fbf", shape: "circle" },
+  { base: "#4f7dff", light: "#c9d8ff", dark: "#1f3fb0", shape: "diamond" },
+  { base: "#b384ff", light: "#eadcff", dark: "#6a3cc4", shape: "hex" },
+  { base: "#ff7fbf", light: "#ffd9ec", dark: "#c23a7c", shape: "drop" },
+  { base: "#ffd45a", light: "#fff3c4", dark: "#c48a12", shape: "square" },
+];
+const NC = COLORS.length;
+const START_GAP = 18;                       // 最初の吹雪との距離（m）
+const blizzardSpeed = t => Math.min(2.4, 0.45 + t * 0.01);     // m/秒
+const MAX_LEAD = 25;                        // 吹雪との距離の上限（m）
+const METER_PER_GEM = 0.5;
+
+// ---------- 音 ----------
+let AC = null, mute = false, windNode = null, windGain = null;
+function audio() {
+  if (!AC) {
+    try { AC = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { AC = null; }
+    if (AC) startWind();
+  }
+  if (AC && AC.state === "suspended") AC.resume();
+}
+function startWind() {
+  // 吹雪の音（ノイズを低めにフィルター）
+  const len = AC.sampleRate * 2, b = AC.createBuffer(1, len, AC.sampleRate), d = b.getChannelData(0);
+  let last = 0;
+  for (let i = 0; i < len; i++) { last = last * 0.97 + (Math.random() * 2 - 1) * 0.03; d[i] = last * 6; }
+  windNode = AC.createBufferSource(); windNode.buffer = b; windNode.loop = true;
+  const f = AC.createBiquadFilter(); f.type = "bandpass"; f.frequency.value = 500; f.Q.value = 0.6;
+  windGain = AC.createGain(); windGain.gain.value = 0;
+  windNode.connect(f); f.connect(windGain); windGain.connect(AC.destination); windNode.start();
+}
+function beep(freq, dur, type = "sine", vol = 0.06, slide = 0) {
+  if (!AC || mute) return;
+  const t = AC.currentTime, o = AC.createOscillator(), g = AC.createGain();
+  o.type = type; o.frequency.setValueAtTime(freq, t);
+  if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(30, freq + slide), t + dur);
+  g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g); g.connect(AC.destination); o.start(t); o.stop(t + dur + 0.02);
+}
+const NOTES = [523, 587, 659, 784, 880, 1046, 1175, 1318];
+const sndMatch = ch => { const f = NOTES[Math.min(NOTES.length - 1, ch)]; beep(f, 0.18, "triangle", 0.07); beep(f * 1.5, 0.12, "sine", 0.03); };
+const sndSwap = () => beep(700, 0.05, "sine", 0.04);
+const sndBad = () => { beep(220, 0.08, "square", 0.03); setTimeout(() => beep(180, 0.08, "square", 0.03), 70); };
+const sndSpecial = () => { beep(1046, 0.3, "triangle", 0.06, 600); beep(1568, 0.25, "sine", 0.04); };
+const sndMake = () => [784, 988, 1175].forEach((f, i) => setTimeout(() => beep(f, 0.1, "triangle", 0.05), i * 50));
+const sndOver = () => beep(330, 0.9, "sine", 0.07, -250);
+
+// ---------- 状態 ----------
+let scene = "title";       // title / play / over
+let grid = [];             // grid[r][c] = {color, sp, x, y, vy, die}  sp: null|"h"|"v"|"bomb"|"star"
+let phase = "idle";        // idle / swap / back / clear / fall
+let phaseT = 0;
+let swapA = null, swapB = null;
+let chain = 0;
+let sel = null, drag = null;
+let posP = 0, posB = -START_GAP, elapsed = 0;
+let best = 0;
+try { best = parseFloat(localStorage.getItem("kusoge004-best") || "0") || 0; } catch (e) { }
+let time = 0, idleT = 0, hint = null, overT = 0, lastRun = null;
+let parts = [], beams = [], floats = [], flakes = [], rings = [];
+let shake = 0;
+let L = null, gemCache = {};
+let banner = null;  // {text, t}
+let pendingSpecials = [];
+
+// ---------- 盤面 ----------
+function newGem(color) { return { color, sp: null, x: 0, y: 0, vy: 0, die: 0 }; }
+function at(r, c) { return r >= 0 && r < N && c >= 0 && c < N ? grid[r][c] : null; }
+function sameColor(a, b) { return a && b && a.sp !== "star" && b.sp !== "star" && a.color === b.color; }
+
+function fillBoard() {
+  for (let tries = 0; tries < 200; tries++) {
+    grid = [];
+    for (let r = 0; r < N; r++) {
+      grid.push([]);
+      for (let c = 0; c < N; c++) {
+        let col, k = 0;
+        do { col = randi(NC); k++; } while (k < 20 && (
+          (c >= 2 && grid[r][c - 1].color === col && grid[r][c - 2].color === col) ||
+          (r >= 2 && grid[r - 1][c].color === col && grid[r - 2][c].color === col)));
+        const g = newGem(col); g.x = c; g.y = r - N - 1 - rand(0, 1.5); grid[r].push(g);
+      }
+    }
+    if (findMove()) return;
+  }
+}
+
+// 3つ以上の並びを探す
+function findRuns() {
+  const runs = [];
+  for (let r = 0; r < N; r++) {
+    let c = 0;
+    while (c < N) {
+      let e = c + 1;
+      while (e < N && sameColor(grid[r][c], grid[r][e])) e++;
+      if (e - c >= 3) { const cells = []; for (let k = c; k < e; k++) cells.push([r, k]); runs.push({ dir: "h", cells }); }
+      c = e;
+    }
+  }
+  for (let c = 0; c < N; c++) {
+    let r = 0;
+    while (r < N) {
+      let e = r + 1;
+      while (e < N && sameColor(grid[r][c], grid[e][c])) e++;
+      if (e - r >= 3) { const cells = []; for (let k = r; k < e; k++) cells.push([k, c]); runs.push({ dir: "v", cells }); }
+      r = e;
+    }
+  }
+  return runs;
+}
+
+function swapCells(a, b) {
+  const t = grid[a[0]][a[1]]; grid[a[0]][a[1]] = grid[b[0]][b[1]]; grid[b[0]][b[1]] = t;
+}
+function findMove() {
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
+    if (grid[r][c].sp === "star") return [[r, c], c + 1 < N ? [r, c + 1] : [r, c - 1]];
+    for (const [dr, dc] of [[0, 1], [1, 0]]) {
+      const r2 = r + dr, c2 = c + dc;
+      if (r2 >= N || c2 >= N) continue;
+      swapCells([r, c], [r2, c2]);
+      const ok = findRuns().length > 0;
+      swapCells([r, c], [r2, c2]);
+      if (ok) return [[r, c], [r2, c2]];
+    }
+  }
+  return null;
+}
+
+function shuffleBoard() {
+  const items = [];
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) items.push(grid[r][c]);
+  for (let t = 0; t < 100; t++) {
+    for (let i = items.length - 1; i > 0; i--) { const j = randi(i + 1); [items[i], items[j]] = [items[j], items[i]]; }
+    for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) grid[r][c] = items[r * N + c];
+    if (findRuns().length === 0 && findMove()) break;
+  }
+  banner = { text: "動かせる結晶がないのでシャッフル", t: 1.6 };
+}
+
+// ---------- 入れ替え ----------
+function trySwap(a, b) {
+  if (phase !== "idle" || scene !== "play") return;
+  if (Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) !== 1) return;
+  swapCells(a, b);
+  swapA = a; swapB = b;
+  phase = "swap"; phaseT = 0; chain = 0; idleT = 0; hint = null;
+  sndSwap();
+}
+
+function afterSwap() {
+  const A = grid[swapA[0]][swapA[1]], B = grid[swapB[0]][swapB[1]];
+  // 雪の結晶（全消し）を入れ替えた
+  if (A.sp === "star" || B.sp === "star") {
+    const clear = new Set();
+    if (A.sp === "star" && B.sp === "star") {
+      for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) clear.add(r * N + c);
+    } else {
+      const star = A.sp === "star" ? swapA : swapB, other = A.sp === "star" ? B : A;
+      clear.add(star[0] * N + star[1]);
+      for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) if (grid[r][c].color === other.color && grid[r][c].sp !== "star") {
+        clear.add(r * N + c);
+        beams.push({ x1: star[1], y1: star[0], x2: c, y2: r, t: 0.4, kind: "star" });
+      }
+    }
+    sndSpecial();
+    startClear(clear, []);
+    return;
+  }
+  if (findRuns().length === 0) {
+    swapCells(swapA, swapB);
+    phase = "back"; phaseT = 0;
+    sndBad();
+    return;
+  }
+  resolve();
+}
+
+// 消す結晶を決めて、特殊結晶を作る
+function resolve() {
+  const runs = findRuns();
+  if (runs.length === 0) {
+    phase = "idle"; chain = 0;
+    if (!findMove()) shuffleBoard();
+    return;
+  }
+  chain++;
+  const clear = new Set();
+  const makes = [];
+  const used = new Set();
+  const key = (r, c) => r * N + c;
+  // 動かした場所を優先して特殊結晶を置く
+  const prefer = (cells) => {
+    for (const p of [swapA, swapB]) if (p && chain === 1 && cells.some(([r, c]) => r === p[0] && c === p[1])) return p;
+    return cells[Math.floor(cells.length / 2)];
+  };
+  // L字・T字（横と縦の並びが交差）→ フロスト
+  for (const h of runs.filter(x => x.dir === "h")) for (const v of runs.filter(x => x.dir === "v")) {
+    const hit = h.cells.find(([r, c]) => v.cells.some(([r2, c2]) => r === r2 && c === c2));
+    if (hit && !used.has(key(...hit)) && h.cells.length < 5 && v.cells.length < 5) {
+      makes.push({ r: hit[0], c: hit[1], sp: "bomb", color: grid[hit[0]][hit[1]].color });
+      used.add(key(...hit)); h.done = v.done = true;
+    }
+  }
+  for (const run of runs) {
+    for (const [r, c] of run.cells) clear.add(key(r, c));
+    if (run.done) continue;
+    const n = run.cells.length;
+    if (n >= 5) { const p = prefer(run.cells); makes.push({ r: p[0], c: p[1], sp: "star", color: -1 }); }
+    else if (n === 4) { const p = prefer(run.cells); makes.push({ r: p[0], c: p[1], sp: run.dir, color: grid[p[0]][p[1]].color }); }
+  }
+  sndMatch(chain - 1);
+  startClear(clear, makes);
+}
+
+function startClear(clearSet, makes) {
+  // 特殊結晶が消えるときは効果が広がる
+  const queue = [...clearSet];
+  const seen = new Set(queue);
+  const makeKeys = new Set(makes.map(m => m.r * N + m.c));
+  while (queue.length) {
+    const k = queue.shift();
+    const r = Math.floor(k / N), c = k % N, g = grid[r][c];
+    if (!g || !g.sp || makeKeys.has(k)) continue;
+    const add = [];
+    if (g.sp === "h") { for (let x = 0; x < N; x++) add.push(r * N + x); beams.push({ x1: 0, y1: r, x2: N - 1, y2: r, t: 0.35, kind: "line" }); }
+    if (g.sp === "v") { for (let y = 0; y < N; y++) add.push(y * N + c); beams.push({ x1: c, y1: 0, x2: c, y2: N - 1, t: 0.35, kind: "line" }); }
+    if (g.sp === "bomb") { for (let y = r - 1; y <= r + 1; y++) for (let x = c - 1; x <= c + 1; x++) if (at(y, x)) add.push(y * N + x); rings.push({ x: c, y: r, t: 0.45 }); shake = 6; }
+    if (g.sp === "star") { const col = randi(NC); for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) if (grid[y][x].color === col) add.push(y * N + x); }
+    if (add.length) sndSpecial();
+    for (const a of add) if (!seen.has(a)) { seen.add(a); queue.push(a); }
+  }
+  let count = 0;
+  for (const k of seen) {
+    if (makeKeys.has(k)) continue;
+    const r = Math.floor(k / N), c = k % N;
+    grid[r][c].die = 0.001;
+    count++;
+  }
+  pendingSpecials = makes;
+  if (makes.length) sndMake();
+  // 距離をかせぐ
+  const mult = 1 + 0.3 * (chain - 1);
+  const gain = count * METER_PER_GEM * mult;
+  posP += gain;
+  if (L) {
+    const b = L.board;
+    floats.push({ x: b.x + b.w / 2, y: b.y + b.h * 0.45, text: `+${gain.toFixed(1)}m`, c: "#ffffff", t: 1, size: 22 });
+    if (chain >= 2) floats.push({ x: b.x + b.w / 2, y: b.y + b.h * 0.45 + 30, text: `${chain} 連鎖`, c: "#9fe8ff", t: 1, size: 18 });
+  }
+  phase = "clear"; phaseT = 0;
+}
+
+function finishClear() {
+  // 消える結晶を取り除き、特殊結晶を置き、落とす
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
+    const g = grid[r][c];
+    if (g && g.die > 0) {
+      const col = g.sp === "star" ? null : COLORS[g.color];
+      for (let i = 0; i < 6; i++) parts.push({ x: c + 0.5, y: r + 0.5, vx: rand(-4, 4), vy: rand(-5, 2), t: rand(0.35, 0.7), c: col ? col.base : "#ffffff", s: rand(0.05, 0.11) });
+      grid[r][c] = null;
+    }
+  }
+  for (const m of pendingSpecials) {
+    const g = newGem(m.color < 0 ? 0 : m.color);
+    g.sp = m.sp; if (m.sp === "star") g.color = -1;
+    g.x = m.c; g.y = m.r; grid[m.r][m.c] = g;
+    rings.push({ x: m.c, y: m.r, t: 0.3, make: true });
+  }
+  pendingSpecials = [];
+  for (let c = 0; c < N; c++) {
+    let w = N - 1;
+    for (let r = N - 1; r >= 0; r--) if (grid[r][c]) { const g = grid[r][c]; grid[r][c] = null; grid[w][c] = g; w--; }
+    let k = 0;
+    for (let r = w; r >= 0; r--) { const g = newGem(randi(NC)); g.x = c; g.y = -1 - k; k++; grid[r][c] = g; }
+  }
+  phase = "fall"; phaseT = 0;
+}
+
+// ---------- 開始・終了 ----------
+function start() {
+  scene = "play";
+  posP = 0; posB = -START_GAP; elapsed = 0;
+  phase = "idle"; chain = 0; sel = null; hint = null; idleT = 0;
+  parts = []; beams = []; floats = []; rings = [];
+  fillBoard();
+  phase = "fall";
+}
+function gameOver() {
+  scene = "over"; overT = 0;
+  const dist = Math.floor(posP);
+  const isBest = dist > best;
+  if (isBest) { best = dist; try { localStorage.setItem("kusoge004-best", String(best)); } catch (e) { } }
+  lastRun = { dist, isBest, time: elapsed };
+  sndOver();
+}
+
+// ---------- レイアウト ----------
+function layout() {
+  const topH = 52;
+  const land = W >= 760 && W > H * 1.05;
+  const o = { land, top: { x: 0, y: 0, w: W, h: topH } };
+  if (land) {
+    const pw = Math.min(560, Math.max(400, W * 0.44));
+    o.scene = { x: 0, y: topH, w: W - pw, h: H - topH };
+    o.panel = { x: W - pw, y: topH, w: pw, h: H - topH };
+    const bs = Math.min(pw - 48, H - topH - 48, 500);
+    o.board = { x: o.panel.x + pw / 2 - bs / 2, y: o.panel.y + (o.panel.h - bs) / 2, w: bs, h: bs };
+  } else {
+    let bs = Math.min(W - 24, 440);
+    if (H - topH - bs - 24 < 220) bs = Math.max(260, H - topH - 24 - 220);
+    const ph = bs + 24;
+    o.panel = { x: 0, y: H - ph, w: W, h: ph };
+    o.scene = { x: 0, y: topH, w: W, h: H - ph - topH };
+    o.board = { x: W / 2 - bs / 2, y: o.panel.y + 12, w: bs, h: bs };
+  }
+  o.cell = o.board.w / N;
+  o.mute = { x: W - 48, y: 8, w: 38, h: 36 };
+  return o;
+}
+function cellAt(x, y) {
+  const b = L.board;
+  if (!inRect(x, y, b)) return null;
+  return [clamp(Math.floor((y - b.y) / L.cell), 0, N - 1), clamp(Math.floor((x - b.x) / L.cell), 0, N - 1)];
+}
+
+// ---------- 入力 ----------
+cv.addEventListener("pointerdown", e => {
+  audio();
+  const x = e.clientX, y = e.clientY;
+  if (inRect(x, y, L.mute)) { mute = !mute; return; }
+  if (scene === "title") { start(); return; }
+  if (scene === "over") { if (overT > 1) start(); return; }
+  const p = cellAt(x, y);
+  if (!p) { sel = null; return; }
+  if (sel && Math.abs(sel[0] - p[0]) + Math.abs(sel[1] - p[1]) === 1) {
+    const a = sel; sel = null; trySwap(a, p); return;
+  }
+  sel = p;
+  drag = { p, x, y };
+  cv.setPointerCapture(e.pointerId);
+});
+cv.addEventListener("pointermove", e => {
+  if (!drag) return;
+  const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+  const th = L.cell * 0.35;
+  if (Math.abs(dx) > th || Math.abs(dy) > th) {
+    const p = drag.p;
+    const q = Math.abs(dx) > Math.abs(dy) ? [p[0], p[1] + Math.sign(dx)] : [p[0] + Math.sign(dy), p[1]];
+    drag = null;
+    if (q[0] >= 0 && q[0] < N && q[1] >= 0 && q[1] < N) { sel = null; trySwap(p, q); }
+  }
+});
+cv.addEventListener("pointerup", () => { drag = null; });
+cv.addEventListener("pointercancel", () => { drag = null; });
+addEventListener("keydown", e => {
+  audio();
+  if ((e.key === "Enter" || e.key === " ") && (scene === "title" || (scene === "over" && overT > 1))) start();
+});
+
+// ---------- 更新 ----------
+function update(dt) {
+  time += dt;
+  shake = Math.max(0, shake - dt * 30);
+  for (const p of parts) { p.t -= dt; p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 14 * dt; }
+  parts = parts.filter(p => p.t > 0);
+  for (const b of beams) b.t -= dt;
+  beams = beams.filter(b => b.t > 0);
+  for (const r of rings) r.t -= dt;
+  rings = rings.filter(r => r.t > 0);
+  for (const f of floats) { f.t -= dt * 0.9; f.y -= 34 * dt; }
+  floats = floats.filter(f => f.t > 0);
+  if (banner) { banner.t -= dt; if (banner.t <= 0) banner = null; }
+
+  // 雪の粒（吹雪が近いほど多く・速く）
+  const gap = posP - posB;
+  const storm = scene === "play" ? clamp(1 - (gap - 3) / 15, 0.12, 1) : 0.25;
+  if (L) {
+    const s = L.scene;
+    const want = 40 + storm * 160;
+    while (flakes.length < want) flakes.push({ x: rand(s.x - 40, s.x + s.w), y: rand(s.y, s.y + s.h), r: rand(1, 3.2), sp: rand(0.6, 1.4), ph: rand(0, 7) });
+    if (flakes.length > want) flakes.length = Math.floor(want);
+    for (const f of flakes) {
+      f.x += (60 + storm * 380) * f.sp * dt; f.y += (25 + storm * 60) * f.sp * dt + Math.sin(time * 3 + f.ph) * 0.4;
+      if (f.x > s.x + s.w + 10 || f.y > s.y + s.h + 10) { f.x = rand(s.x - 60, s.x); f.y = rand(s.y - 20, s.y + s.h); }
+    }
+  }
+  if (windGain && AC) windGain.gain.setTargetAtTime(mute ? 0 : (scene === "play" ? 0.02 + storm * 0.12 : 0.02), AC.currentTime, 0.3);
+
+  // 結晶の位置（落下と入れ替え）
+  let settled = true;
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
+    const g = grid[r] && grid[r][c]; if (!g) continue;
+    if (phase === "swap" || phase === "back") {
+      const k = Math.min(1, dt * 18);
+      g.x = lerp(g.x, c, k); g.y = lerp(g.y, r, k);
+    } else {
+      g.x = lerp(g.x, c, Math.min(1, dt * 18));
+      if (g.y < r) { g.vy += 46 * dt; g.y = Math.min(r, g.y + g.vy * dt); if (g.y < r) settled = false; else g.vy = 0; }
+      else { g.y = r; g.vy = 0; }
+    }
+    if (g.die > 0) g.die = Math.min(1, g.die + dt * 5);
+  }
+
+  if (scene === "over") { overT += dt; return; }
+  if (scene !== "play") return;
+
+  elapsed += dt;
+  posB += blizzardSpeed(elapsed) * dt;
+  if (posP - posB > MAX_LEAD) posB = posP - MAX_LEAD;
+  if (posP - posB <= 0) { gameOver(); return; }
+
+  phaseT += dt;
+  if (phase === "swap" && phaseT > 0.16) afterSwap();
+  else if (phase === "back" && phaseT > 0.16) phase = "idle";
+  else if (phase === "clear" && phaseT > 0.22) finishClear();
+  else if (phase === "fall" && settled && phaseT > 0.05) resolve();
+
+  if (phase === "idle") {
+    idleT += dt;
+    if (idleT > 5 && !hint) hint = findMove();
+  }
+}
+
+// ---------- 描画：結晶 ----------
+function gemPath(g, shape, s) {
+  const h = s / 2;
+  g.beginPath();
+  if (shape === "circle") g.arc(0, 0, h * 0.82, 0, Math.PI * 2);
+  else if (shape === "diamond") { g.moveTo(0, -h * 0.92); g.lineTo(h * 0.78, 0); g.lineTo(0, h * 0.92); g.lineTo(-h * 0.78, 0); g.closePath(); }
+  else if (shape === "hex") { for (let i = 0; i < 6; i++) { const a = Math.PI / 6 + i * Math.PI / 3; g.lineTo(Math.cos(a) * h * 0.86, Math.sin(a) * h * 0.86); } g.closePath(); }
+  else if (shape === "drop") { g.moveTo(0, -h * 0.9); g.bezierCurveTo(h * 0.55, -h * 0.25, h * 0.78, h * 0.1, h * 0.78, h * 0.3); g.arc(0, h * 0.3, h * 0.78, 0, Math.PI); g.bezierCurveTo(-h * 0.78, h * 0.1, -h * 0.55, -h * 0.25, 0, -h * 0.9); g.closePath(); }
+  else if (shape === "square") { rr(g, -h * 0.74, -h * 0.74, h * 1.48, h * 1.48, h * 0.24); }
+}
+function gemImage(color, size) {
+  const key = color + ":" + Math.round(size);
+  if (gemCache[key]) return gemCache[key];
+  const c = document.createElement("canvas");
+  c.width = c.height = Math.ceil(size * DPR);
+  const g = c.getContext("2d");
+  g.scale(DPR, DPR); g.translate(size / 2, size / 2);
+  const col = COLORS[color];
+  gemPath(g, col.shape, size);
+  const gr = g.createRadialGradient(-size * 0.15, -size * 0.2, size * 0.05, 0, 0, size * 0.55);
+  gr.addColorStop(0, col.light); gr.addColorStop(0.45, col.base); gr.addColorStop(1, col.dark);
+  g.fillStyle = gr; g.fill();
+  g.lineWidth = Math.max(1.5, size * 0.04); g.strokeStyle = col.dark; g.stroke();
+  // 内側のカット
+  g.save(); gemPath(g, col.shape, size * 0.55); g.strokeStyle = "rgba(255,255,255,0.35)"; g.lineWidth = Math.max(1, size * 0.025); g.stroke(); g.restore();
+  // ツヤ
+  g.fillStyle = "rgba(255,255,255,0.55)";
+  g.beginPath(); g.ellipse(-size * 0.13, -size * 0.2, size * 0.13, size * 0.07, -0.5, 0, Math.PI * 2); g.fill();
+  gemCache[key] = c;
+  return c;
+}
+function drawFlake(x, y, r, color, lw) {
+  ctx.strokeStyle = color; ctx.lineWidth = lw; ctx.lineCap = "round";
+  for (let i = 0; i < 6; i++) {
+    const a = i * Math.PI / 3 + time * 0.6;
+    const ex = x + Math.cos(a) * r, ey = y + Math.sin(a) * r;
+    ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(ex, ey); ctx.stroke();
+    for (const t of [0.5, 0.75]) {
+      const bx = x + Math.cos(a) * r * t, by = y + Math.sin(a) * r * t, bl = r * 0.25 * (1.2 - t);
+      ctx.beginPath();
+      ctx.moveTo(bx, by); ctx.lineTo(bx + Math.cos(a + 0.8) * bl, by + Math.sin(a + 0.8) * bl);
+      ctx.moveTo(bx, by); ctx.lineTo(bx + Math.cos(a - 0.8) * bl, by + Math.sin(a - 0.8) * bl);
+      ctx.stroke();
+    }
+  }
+}
+function drawGem(g, cx, cy, s) {
+  const scale = g.die > 0 ? 1 - g.die : 1;
+  if (scale <= 0.02) return;
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.scale(scale, scale);
+  if (g.die > 0) ctx.globalAlpha = 1 - g.die * 0.5;
+  if (g.sp === "star") {
+    const gl = ctx.createRadialGradient(0, 0, 2, 0, 0, s * 0.5);
+    gl.addColorStop(0, "rgba(255,255,255,0.95)"); gl.addColorStop(0.5, "rgba(170,230,255,0.6)"); gl.addColorStop(1, "rgba(120,180,255,0)");
+    ctx.fillStyle = gl; ctx.beginPath(); ctx.arc(0, 0, s * 0.5, 0, 7); ctx.fill();
+    drawFlake(0, 0, s * 0.38, "#ffffff", Math.max(2, s * 0.06));
+    drawFlake(0, 0, s * 0.38, "rgba(120,200,255,0.9)", Math.max(1, s * 0.025));
+  } else {
+    const img = gemImage(g.color, s);
+    ctx.drawImage(img, -s / 2, -s / 2, s, s);
+    if (g.sp === "h" || g.sp === "v") {
+      ctx.save();
+      if (g.sp === "v") ctx.rotate(Math.PI / 2);
+      ctx.strokeStyle = "rgba(255,255,255,0.95)"; ctx.lineWidth = Math.max(2, s * 0.06); ctx.lineCap = "round";
+      const k = 0.5 + 0.5 * Math.sin(time * 6);
+      for (const yy of [-0.12, 0.12]) { ctx.beginPath(); ctx.moveTo(-s * 0.32, yy * s); ctx.lineTo(s * 0.32, yy * s); ctx.stroke(); }
+      ctx.fillStyle = `rgba(255,255,255,${0.6 + k * 0.4})`;
+      for (const d of [-1, 1]) { ctx.beginPath(); ctx.moveTo(d * s * 0.46, 0); ctx.lineTo(d * s * 0.34, -s * 0.09); ctx.lineTo(d * s * 0.34, s * 0.09); ctx.fill(); }
+      ctx.restore();
+    } else if (g.sp === "bomb") {
+      const k = 0.5 + 0.5 * Math.sin(time * 5);
+      ctx.strokeStyle = `rgba(255,255,255,${0.55 + k * 0.45})`; ctx.lineWidth = Math.max(2, s * 0.05);
+      ctx.beginPath(); ctx.arc(0, 0, s * (0.44 + k * 0.03), 0, 7); ctx.stroke();
+      drawFlake(0, 0, s * 0.18, "rgba(255,255,255,0.95)", Math.max(1.5, s * 0.035));
+    }
+  }
+  ctx.restore();
+}
+
+// ---------- 描画：場面 ----------
+function drawScene() {
+  const s = L.scene;
+  ctx.save();
+  ctx.beginPath(); ctx.rect(s.x, s.y, s.w, s.h); ctx.clip();
+  const gap = posP - posB;
+  // 空
+  const sky = ctx.createLinearGradient(0, s.y, 0, s.y + s.h);
+  sky.addColorStop(0, "#5f86b8"); sky.addColorStop(1, "#c9dcef");
+  ctx.fillStyle = sky; ctx.fillRect(s.x, s.y, s.w, s.h);
+  const groundY = s.y + s.h * 0.74;
+  const pxm = Math.max(14, (s.w * 0.62) / 22);   // 1mあたりのピクセル
+  // 遠くの山（ゆっくり流れる）
+  for (const [layer, col, hgt, spd] of [[0, "#9db6d3", 0.42, 0.15], [1, "#7f9cc0", 0.3, 0.35]]) {
+    ctx.fillStyle = col;
+    const off = (posP * pxm * spd) % 260;
+    ctx.beginPath(); ctx.moveTo(s.x, groundY);
+    for (let x = -260; x < s.w + 260; x += 130) {
+      const px = s.x + x - off;
+      ctx.lineTo(px + 65, groundY - s.h * hgt * (layer ? 0.8 : 1) * (0.7 + 0.3 * Math.sin(x * 0.7 + layer)));
+      ctx.lineTo(px + 130, groundY);
+    }
+    ctx.closePath(); ctx.fill();
+    // 雪の山頂
+    ctx.fillStyle = "rgba(255,255,255,0.6)";
+  }
+  // 針葉樹
+  const toff = (posP * pxm * 0.7) % 90;
+  for (let x = -90; x < s.w + 90; x += 90) {
+    const tx = s.x + x - toff + 30, ty = groundY;
+    ctx.fillStyle = "#3f6b6a";
+    for (let k = 0; k < 3; k++) { const w = 22 - k * 5, y0 = ty - 8 - k * 14; ctx.beginPath(); ctx.moveTo(tx - w, y0); ctx.lineTo(tx, y0 - 22); ctx.lineTo(tx + w, y0); ctx.fill(); }
+    ctx.fillStyle = "#eef5fb";
+    for (let k = 0; k < 3; k++) { const w = 10 - k * 2, y0 = ty - 8 - k * 14 - 14; ctx.beginPath(); ctx.moveTo(tx - w, y0 + 4); ctx.lineTo(tx, y0 - 8); ctx.lineTo(tx + w, y0 + 4); ctx.fill(); }
+  }
+  // 雪原
+  const gg = ctx.createLinearGradient(0, groundY, 0, s.y + s.h);
+  gg.addColorStop(0, "#f4f9ff"); gg.addColorStop(1, "#cfe0f0");
+  ctx.fillStyle = gg; ctx.fillRect(s.x, groundY, s.w, s.y + s.h - groundY);
+  // 足あと
+  ctx.fillStyle = "rgba(120,150,190,0.35)";
+  const fo = (posP * pxm) % 34;
+  const runnerX = s.x + s.w * 0.66;
+  for (let x = runnerX - 10 - fo; x > s.x - 20; x -= 34) {
+    ctx.beginPath(); ctx.ellipse(x, groundY + 12 + ((Math.round((x + fo) / 34)) % 2 ? 4 : -2), 5, 2.4, 0, 0, 7); ctx.fill();
+  }
+  // 走る人
+  drawRunner(runnerX, groundY + 10, clamp(s.h / 230, 0.7, 1.5), gap);
+  // 吹雪の壁
+  const wallX = runnerX - gap * pxm;
+  if (wallX > s.x - 80) {
+    const wg = ctx.createLinearGradient(wallX - 160, 0, wallX + 30, 0);
+    wg.addColorStop(0, "rgba(240,246,255,0.97)"); wg.addColorStop(0.75, "rgba(225,236,250,0.85)"); wg.addColorStop(1, "rgba(225,236,250,0)");
+    ctx.fillStyle = wg; ctx.fillRect(s.x, s.y, Math.max(0, wallX + 30 - s.x), s.h);
+    ctx.fillStyle = "rgba(255,255,255,0.55)";
+    for (let i = 0; i < 9; i++) {
+      const yy = s.y + (i + 0.5) * s.h / 9, rad = 26 + 16 * Math.sin(time * 2 + i);
+      ctx.beginPath(); ctx.arc(wallX + Math.sin(time * 3 + i * 1.7) * 14, yy, rad, 0, 7); ctx.fill();
+    }
+  }
+  // 雪の粒
+  ctx.fillStyle = "#ffffff";
+  for (const f of flakes) { ctx.globalAlpha = 0.85; ctx.beginPath(); ctx.arc(f.x, f.y, f.r, 0, 7); ctx.fill(); }
+  ctx.globalAlpha = 1;
+  // 凍りつく画面のふち
+  if (scene === "play" && gap < 6) {
+    const a = (1 - gap / 6) * 0.75;
+    const vg = ctx.createRadialGradient(s.x + s.w / 2, s.y + s.h / 2, Math.min(s.w, s.h) * 0.25, s.x + s.w / 2, s.y + s.h / 2, Math.max(s.w, s.h) * 0.75);
+    vg.addColorStop(0, "rgba(220,240,255,0)"); vg.addColorStop(1, `rgba(220,240,255,${a})`);
+    ctx.fillStyle = vg; ctx.fillRect(s.x, s.y, s.w, s.h);
+  }
+  // メーター
+  if (scene === "play") {
+    const danger = gap < 5;
+    const mw = Math.min(260, s.w - 32), mx = s.x + s.w / 2 - mw / 2, my = s.y + 12;
+    ctx.fillStyle = "rgba(10,25,45,0.55)"; rr(ctx, mx, my, mw, 30, 15); ctx.fill();
+    ctx.fillStyle = danger ? (Math.sin(time * 12) > 0 ? "#ffffff" : "#9fd8ff") : "#7fd0ff";
+    rr(ctx, mx + 3, my + 3, (mw - 6) * clamp(gap / 25, 0.03, 1), 24, 12); ctx.fill();
+    txt(`吹雪まで ${Math.max(0, gap).toFixed(1)}m`, mx + mw / 2, my + 15.5, 14, danger ? "#0e2a4a" : "#ffffff", "center", 900);
+  }
+  ctx.restore();
+}
+
+function drawRunner(x, y, sc, gap) {
+  const run = scene !== "title";
+  const sp = scene === "play" ? 10 + clamp(8 - gap, 0, 8) : 6;
+  const ph = time * sp;
+  const leg = Math.sin(ph), bob = Math.abs(Math.cos(ph)) * 3 * sc;
+  ctx.save();
+  ctx.translate(x, y - bob);
+  // 影
+  ctx.fillStyle = "rgba(60,90,130,0.2)"; ctx.beginPath(); ctx.ellipse(0, bob, 18 * sc, 4 * sc, 0, 0, 7); ctx.fill();
+  // 脚
+  ctx.strokeStyle = "#2c3a52"; ctx.lineWidth = 7 * sc; ctx.lineCap = "round";
+  ctx.beginPath(); ctx.moveTo(0, -26 * sc); ctx.lineTo(leg * 12 * sc, -12 * sc); ctx.lineTo(leg * 14 * sc - 4 * sc, 0); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(0, -26 * sc); ctx.lineTo(-leg * 12 * sc, -12 * sc); ctx.lineTo(-leg * 14 * sc - 4 * sc, 0); ctx.stroke();
+  // 体（コート）
+  ctx.save(); ctx.rotate(0.15);
+  ctx.fillStyle = "#d9463b"; rr(ctx, -12 * sc, -56 * sc, 24 * sc, 34 * sc, 8 * sc); ctx.fill();
+  ctx.fillStyle = "#b8352c"; ctx.fillRect(-12 * sc, -36 * sc, 24 * sc, 4 * sc);
+  // マフラー
+  ctx.fillStyle = "#f2c14e"; rr(ctx, -11 * sc, -58 * sc, 22 * sc, 7 * sc, 3 * sc); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(-8 * sc, -55 * sc);
+  ctx.quadraticCurveTo(-22 * sc, -54 * sc + Math.sin(time * 14) * 3 * sc, -32 * sc, -50 * sc + Math.sin(time * 14 + 1) * 4 * sc);
+  ctx.lineTo(-30 * sc, -45 * sc + Math.sin(time * 14 + 1) * 4 * sc); ctx.quadraticCurveTo(-20 * sc, -49 * sc, -8 * sc, -50 * sc); ctx.fill();
+  // 腕
+  ctx.strokeStyle = "#d9463b"; ctx.lineWidth = 6 * sc;
+  ctx.beginPath(); ctx.moveTo(0, -50 * sc); ctx.lineTo(-leg * 12 * sc, -38 * sc); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(0, -50 * sc); ctx.lineTo(leg * 12 * sc, -38 * sc); ctx.stroke();
+  // 頭
+  ctx.fillStyle = "#f2c9a0"; ctx.beginPath(); ctx.arc(2 * sc, -68 * sc, 10 * sc, 0, 7); ctx.fill();
+  ctx.fillStyle = "#3b6fb6"; ctx.beginPath(); ctx.arc(2 * sc, -71 * sc, 10.5 * sc, Math.PI, 0); ctx.fill(); // ニット帽
+  ctx.fillRect(-8.5 * sc, -72 * sc, 21 * sc, 4 * sc);
+  ctx.fillStyle = "#ffffff"; ctx.beginPath(); ctx.arc(2 * sc, -82 * sc, 4 * sc, 0, 7); ctx.fill();
+  ctx.fillStyle = "#2a2a2a"; ctx.beginPath(); ctx.arc(7 * sc, -67 * sc, 1.5 * sc, 0, 7); ctx.fill();
+  ctx.restore();
+  ctx.restore();
+}
+
+// ---------- 描画：盤面 ----------
+function drawBoard() {
+  const p = L.panel, b = L.board, cs = L.cell;
+  ctx.fillStyle = "#13233a"; ctx.fillRect(p.x, p.y, p.w, p.h);
+  const sx = shake ? Math.sin(time * 80) * shake * 0.4 : 0;
+  ctx.save();
+  ctx.translate(sx, 0);
+  // 盤の背景（氷）
+  const bg = ctx.createLinearGradient(b.x, b.y, b.x + b.w, b.y + b.h);
+  bg.addColorStop(0, "#1f3c5e"); bg.addColorStop(1, "#18304d");
+  ctx.fillStyle = bg; rr(ctx, b.x - 6, b.y - 6, b.w + 12, b.h + 12, 16); ctx.fill();
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
+    ctx.fillStyle = (r + c) % 2 ? "rgba(255,255,255,0.05)" : "rgba(255,255,255,0.09)";
+    rr(ctx, b.x + c * cs + 2, b.y + r * cs + 2, cs - 4, cs - 4, 8); ctx.fill();
+  }
+  if (scene === "title") { ctx.restore(); return; }
+  // 選択・ヒント
+  if (sel) {
+    ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 3;
+    rr(ctx, b.x + sel[1] * cs + 3, b.y + sel[0] * cs + 3, cs - 6, cs - 6, 10); ctx.stroke();
+  }
+  if (hint && phase === "idle") {
+    const a = 0.35 + 0.35 * Math.sin(time * 5);
+    ctx.strokeStyle = `rgba(160,230,255,${a})`; ctx.lineWidth = 3;
+    for (const h of hint) { rr(ctx, b.x + h[1] * cs + 4, b.y + h[0] * cs + 4, cs - 8, cs - 8, 10); ctx.stroke(); }
+  }
+  ctx.save();
+  ctx.beginPath(); rr(ctx, b.x - 6, b.y - 6, b.w + 12, b.h + 12, 16); ctx.clip();
+  const gs = cs * 0.86;
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
+    const g = grid[r] && grid[r][c]; if (!g) continue;
+    drawGem(g, b.x + (g.x + 0.5) * cs, b.y + (g.y + 0.5) * cs, gs);
+  }
+  ctx.restore();
+  // 効果
+  for (const bm of beams) {
+    const a = clamp(bm.t / 0.35, 0, 1);
+    ctx.strokeStyle = bm.kind === "star" ? `rgba(180,235,255,${a})` : `rgba(255,255,255,${a})`;
+    ctx.lineWidth = (bm.kind === "star" ? 3 : cs * 0.35) * a + 1; ctx.lineCap = "round";
+    const x1 = b.x + (bm.x1 + 0.5) * cs, y1 = b.y + (bm.y1 + 0.5) * cs, x2 = b.x + (bm.x2 + 0.5) * cs, y2 = b.y + (bm.y2 + 0.5) * cs;
+    ctx.beginPath(); ctx.moveTo(bm.kind === "line" ? (bm.x1 === bm.x2 ? x1 : b.x) : x1, bm.kind === "line" ? (bm.y1 === bm.y2 ? y1 : b.y) : y1);
+    ctx.lineTo(bm.kind === "line" ? (bm.x1 === bm.x2 ? x2 : b.x + b.w) : x2, bm.kind === "line" ? (bm.y1 === bm.y2 ? y2 : b.y + b.h) : y2); ctx.stroke();
+  }
+  for (const rg of rings) {
+    const life = rg.make ? 0.3 : 0.45, k = 1 - rg.t / life;
+    ctx.strokeStyle = `rgba(255,255,255,${1 - k})`; ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.arc(b.x + (rg.x + 0.5) * cs, b.y + (rg.y + 0.5) * cs, cs * (rg.make ? 0.3 + k * 0.4 : 0.5 + k * 1.3), 0, 7); ctx.stroke();
+  }
+  for (const pt of parts) {
+    ctx.globalAlpha = clamp(pt.t * 2.5, 0, 1); ctx.fillStyle = pt.c;
+    const px = b.x + pt.x * cs, py = b.y + pt.y * cs, ps = pt.s * cs;
+    ctx.save(); ctx.translate(px, py); ctx.rotate(pt.t * 8); ctx.fillRect(-ps / 2, -ps / 2, ps, ps); ctx.restore();
+  }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+  for (const f of floats) {
+    ctx.globalAlpha = clamp(f.t * 2, 0, 1);
+    ctx.font = `900 ${f.size}px ${FONT}`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.lineWidth = 4; ctx.strokeStyle = "rgba(10,30,60,0.7)"; ctx.strokeText(f.text, f.x, f.y);
+    ctx.fillStyle = f.c; ctx.fillText(f.text, f.x, f.y);
+  }
+  ctx.globalAlpha = 1;
+  if (banner) {
+    ctx.globalAlpha = clamp(banner.t * 3, 0, 1);
+    ctx.font = `800 14px ${FONT}`;
+    const w = ctx.measureText(banner.text).width + 32;
+    ctx.fillStyle = "rgba(10,25,45,0.9)"; rr(ctx, b.x + b.w / 2 - w / 2, b.y + b.h / 2 - 18, w, 36, 18); ctx.fill();
+    txt(banner.text, b.x + b.w / 2, b.y + b.h / 2 + 0.5, 14, "#fff", "center", 800);
+    ctx.globalAlpha = 1;
+  }
+}
+
+function drawTop() {
+  ctx.fillStyle = "#0b1626"; ctx.fillRect(0, 0, W, L.top.h);
+  txt(`${Math.floor(posP)}m`, 16, 26, 22, "#9fe0ff", "left", 900);
+  ctx.font = `900 22px ${FONT}`;
+  const w = ctx.measureText(`${Math.floor(posP)}m`).width;
+  txt(`最高 ${Math.floor(best)}m`, 28 + w, 27, 13, "#a9bdd4", "left", 700);
+  if (scene === "play") txt(`吹雪 ${blizzardSpeed(elapsed).toFixed(2)}m/秒`, W - 60, 27, 12, "#c9e6ff", "right", 700);
+  const m = L.mute;
+  ctx.fillStyle = "rgba(255,255,255,0.1)"; rr(ctx, m.x, m.y, m.w, m.h, 10); ctx.fill();
+  ctx.fillStyle = "#e3eef8";
+  const mx = m.x + 11, my = m.y + 18;
+  ctx.beginPath(); ctx.moveTo(mx, my - 4); ctx.lineTo(mx + 5, my - 4); ctx.lineTo(mx + 10, my - 9); ctx.lineTo(mx + 10, my + 9); ctx.lineTo(mx + 5, my + 4); ctx.lineTo(mx, my + 4); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = "#e3eef8"; ctx.lineWidth = 2;
+  if (mute) { ctx.beginPath(); ctx.moveTo(mx + 13, my - 5); ctx.lineTo(mx + 19, my + 5); ctx.moveTo(mx + 19, my - 5); ctx.lineTo(mx + 13, my + 5); ctx.stroke(); }
+  else { ctx.beginPath(); ctx.arc(mx + 11, my, 6, -0.9, 0.9); ctx.stroke(); }
+}
+
+function drawOverlay() {
+  if (scene === "title") {
+    ctx.fillStyle = "rgba(8,18,32,0.6)"; ctx.fillRect(0, 0, W, H);
+    const big = clamp(W / 10, 30, 60);
+    ctx.font = `900 ${big}px ${FONT}`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    const t0 = H * 0.2;
+    ctx.lineWidth = 8; ctx.strokeStyle = "#0b2340"; ctx.strokeText("ブリザード・ラン", W / 2, t0);
+    const tg = ctx.createLinearGradient(0, t0 - big / 2, 0, t0 + big / 2);
+    tg.addColorStop(0, "#ffffff"); tg.addColorStop(1, "#9fe0ff");
+    ctx.fillStyle = tg; ctx.fillText("ブリザード・ラン", W / 2, t0);
+    txt("吹雪から逃げるマッチ3パズル", W / 2, t0 + big * 0.85, clamp(W / 28, 13, 17), "#d6ecff", "center", 700);
+    const lines = ["・となり同士の結晶を入れ替えて、同じ色を3つそろえる",
+      "・消した数だけ前に進む。連鎖するとさらに遠くへ",
+      "・4つ → 一列を消す結晶、L字・T字 → 周りを消す結晶",
+      "・5つ → 同じ色をすべて消す雪の結晶",
+      "・後ろから吹雪が迫る。追いつかれたら終わり"];
+    const lw = Math.min(420, W - 28), lx = W / 2 - lw / 2, ly = t0 + big * 1.6;
+    ctx.fillStyle = "rgba(0,10,25,0.45)"; rr(ctx, lx, ly - 14, lw, lines.length * 26 + 18, 14); ctx.fill();
+    lines.forEach((l, i) => txt(l, lx + 14, ly + 8 + i * 26, W < 380 ? 12 : 13, "#eaf4ff", "left", 600));
+    ctx.globalAlpha = 0.65 + 0.35 * Math.sin(time * 4);
+    txt("タップではじめる", W / 2, ly + lines.length * 26 + 40, 18, "#ffffff", "center", 900);
+    ctx.globalAlpha = 1;
+    if (best > 0) txt(`最高記録 ${Math.floor(best)}m`, W / 2, ly + lines.length * 26 + 70, 13, "#a9bdd4");
+  } else if (scene === "over") {
+    const a = clamp(overT * 2.5, 0, 1);
+    ctx.globalAlpha = a;
+    ctx.fillStyle = "rgba(230,242,255,0.88)"; ctx.fillRect(0, 0, W, H);
+    const big = clamp(W / 12, 26, 46);
+    txt("吹雪に追いつかれた", W / 2, H * 0.3, big, "#123459", "center", 900);
+    txt(`${lastRun.dist}m`, W / 2, H * 0.3 + big * 1.6, big * 1.6, "#1f6fb8", "center", 900);
+    txt(lastRun.isBest ? "最高記録！" : `最高記録 ${Math.floor(best)}m`, W / 2, H * 0.3 + big * 2.9, 16, lastRun.isBest ? "#d9463b" : "#4a6380", "center", 800);
+    txt(`逃げた時間 ${Math.floor(lastRun.time)}秒`, W / 2, H * 0.3 + big * 3.6, 13, "#4a6380", "center", 700);
+    if (overT > 1) {
+      ctx.globalAlpha = a * (0.65 + 0.35 * Math.sin(time * 4));
+      txt("タップでもう一度", W / 2, H * 0.3 + big * 4.8, 18, "#123459", "center", 900);
+    }
+    ctx.globalAlpha = 1;
+  }
+}
+
+// ---------- ループ ----------
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  L = layout();
+  update(dt);
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  drawScene();
+  drawBoard();
+  drawTop();
+  drawOverlay();
+  requestAnimationFrame(frame);
+}
+resize();
+L = layout();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
