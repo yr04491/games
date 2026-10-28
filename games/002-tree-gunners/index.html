@@ -1,0 +1,1113 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>木、撃ちます。</title>
+<style>
+  html,body{margin:0;height:100%;background:#1d2b22;overflow:hidden;touch-action:none;
+    font-family:system-ui,-apple-system,"Hiragino Sans","Noto Sans CJK JP","Noto Sans JP",sans-serif;
+    -webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
+  canvas{display:block;width:100vw;height:100vh}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+"use strict";
+// ============================================================
+//  木、撃ちます。 — 放置系ガンシューティング（クソゲー）
+//  人間の部隊が、ただそこに生えている木をひたすら撃つ。
+//  画像ファイルなし：すべてコードで描画
+// ============================================================
+const cv = document.getElementById("c");
+const ctx = cv.getContext("2d");
+const FONT = 'system-ui,-apple-system,"Hiragino Sans","Noto Sans CJK JP","Noto Sans JP",sans-serif';
+
+let W = 0, H = 0, DPR = 1;
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = innerWidth; H = innerHeight;
+  cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
+}
+addEventListener("resize", resize);
+resize();
+
+// ---------- ユーティリティ ----------
+function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+function rand(a, b) { return a + Math.random() * (b - a); }
+function pick(a) { return a[Math.floor(Math.random() * a.length)]; }
+function rr(x, y, w, h, r) {
+  r = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+function txt(s, x, y, size, color, align = "center", weight = 700, base = "middle") {
+  ctx.font = `${weight} ${size}px ${FONT}`;
+  ctx.fillStyle = color; ctx.textAlign = align; ctx.textBaseline = base;
+  ctx.fillText(s, x, y);
+}
+function inRect(px, py, r) { return r && px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h; }
+
+// 日本式の大きな数（万・億・兆…）
+const UNITS = ["", "万", "億", "兆", "京", "垓", "𥝱", "穣", "溝", "澗"];
+function fmt(n) {
+  n = Math.floor(n);
+  if (n < 10000) return String(n);
+  let u = 0;
+  while (n >= 10000 && u < UNITS.length - 1) { n /= 10000; u++; }
+  return (n >= 100 ? Math.floor(n) : n.toFixed(1).replace(/\.0$/, "")) + UNITS[u];
+}
+
+// ---------- 銃のデータ ----------
+// rate: 1秒あたりの発射数 / pellets: 1発あたりの弾数
+const GUNS = [
+  null,
+  { name: "ハンドガン",       rate: 1.6, pellets: 1, len: 0.55, color: "#3a3f47", bullet: "#ffd34d", kind: "bullet" },
+  { name: "リボルバー",       rate: 1.2, pellets: 1, len: 0.62, color: "#7a5a3a", bullet: "#ffd34d", kind: "bullet" },
+  { name: "サブマシンガン",   rate: 5.0, pellets: 1, len: 0.75, color: "#2b2f36", bullet: "#ffe27a", kind: "bullet" },
+  { name: "ショットガン",     rate: 0.9, pellets: 5, len: 0.95, color: "#5b4030", bullet: "#ffb347", kind: "pellet" },
+  { name: "アサルトライフル", rate: 3.2, pellets: 1, len: 1.0,  color: "#3d4a2c", bullet: "#ffe27a", kind: "bullet" },
+  { name: "スナイパー",       rate: 0.5, pellets: 1, len: 1.25, color: "#22303a", bullet: "#ffffff", kind: "snipe" },
+  { name: "ミニガン",         rate: 9.0, pellets: 1, len: 1.05, color: "#4a4d52", bullet: "#ffcf3f", kind: "bullet" },
+  { name: "ロケットランチャー", rate: 0.45, pellets: 1, len: 1.1, color: "#4f6b2f", bullet: "#ff7a3d", kind: "rocket" },
+  { name: "レーザー銃",       rate: 7.0, pellets: 1, len: 0.95, color: "#d7dde6", bullet: "#5ff0ff", kind: "laser" },
+  { name: "レールガン",       rate: 0.6, pellets: 1, len: 1.3,  color: "#45335f", bullet: "#c48bff", kind: "laser" },
+  { name: "謎の光線銃",       rate: 6.0, pellets: 1, len: 0.8,  color: "#e05aa0", bullet: "#ff8ad8", kind: "ring" },
+  { name: "割り箸鉄砲",       rate: 1.0, pellets: 1, len: 0.7,  color: "#e8cf9a", bullet: "#c9a26b", kind: "band" },
+];
+const MAX_LV = GUNS.length - 1;
+function gunDPS(lv) { return 2.2 * Math.pow(2.15, lv - 1); }
+// 銃のレベルごとの色（スロットの枠）
+const LV_COL = ["", "#9aa4ad", "#8bb174", "#5fb0d6", "#6c8cf0", "#a77cf0", "#e07ad0",
+  "#f07a7a", "#f0a050", "#f0d040", "#5fe0c8", "#ff6fb0", "#ffd700"];
+
+// ---------- 木のデータ ----------
+const TREE_NAMES = ["ただの木", "普通の木", "近所の木", "思い出の木", "わりと太い木",
+  "なんか強い木", "木（本気）", "公園の木", "まあまあの木", "通学路の木", "固い木", "名もなき木"];
+const TREE_LINES = ["痛っ", "木ですけど？", "何もしてないのに", "年輪が…", "やめて",
+  "光合成中なんだけど", "根は張ってます", "え、なんで？", "樹齢80年だぞ", "葉っぱ落ちる…",
+  "せめて理由を", "通報しますよ", "幹はやめて"];
+const BOSS_LINES = ["バチが当たるぞ", "千年ここにおる", "神ぞ？", "おぬしら正気か"];
+const SOLDIER_LINES = ["目標、前方の木！", "撃て！", "了解！", "木だ！", "まだ立ってるぞ！",
+  "これが任務だ", "なぜ木を…いや、撃て！", "装填完了！", "援護する！"];
+// ステージごとの葉の色（季節が変わっていく）
+const LEAF = [
+  ["#3f8f3a", "#58a84a"], ["#2f7d4a", "#47a064"], ["#d8892b", "#eaa54a"], ["#f2a7c3", "#f7c4d6"],
+  ["#e9eef2", "#ffffff"], ["#7a4bb0", "#9a6bd0"], ["#2a6f8f", "#3f93b8"], ["#b8b040", "#d8d060"],
+];
+
+function treeHP(stage, tr) {
+  const n = (stage - 1) * 10 + tr - 1;
+  const h = 6 * Math.pow(1.16, n);
+  return tr === 10 ? h * 5 : h;
+}
+const BOSS_TIME = 30;
+
+// ---------- セーブデータ ----------
+const SAVE_KEY = "kusoge002-tree-gunners";
+function freshRun(keep) {
+  return {
+    coins: 10, stage: 1, tree: 1, buys: 0,
+    grid: [1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    ame: keep ? keep.ame : 0,
+    up: keep ? keep.up : { atk: 0, spd: 0, coin: 0 },
+    rebirths: keep ? keep.rebirths : 0,
+    best: keep ? keep.best : 1,
+    mute: keep ? keep.mute : false,
+    coinRate: 0, lastSave: Date.now(),
+  };
+}
+let S = freshRun(null);
+function save() {
+  S.lastSave = Date.now();
+  try { localStorage.setItem(SAVE_KEY, JSON.stringify(S)); } catch (e) { /* 保存できない環境では何もしない */ }
+}
+function load() {
+  try {
+    const raw = localStorage.getItem(SAVE_KEY);
+    if (!raw) return false;
+    const d = JSON.parse(raw);
+    if (!d || !Array.isArray(d.grid) || d.grid.length !== 12) return false;
+    S = Object.assign(freshRun(null), d);
+    S.up = Object.assign({ atk: 0, spd: 0, coin: 0 }, d.up || {});
+    return true;
+  } catch (e) { return false; }
+}
+const hadSave = load();
+
+// ---------- 倍率 ----------
+const atkMul = () => 1 + 0.25 * S.up.atk;
+const spdMul = () => 1 + 0.10 * S.up.spd;
+const coinMul = () => 1 + 0.25 * S.up.coin;
+const buyLevel = () => Math.min(10, 1 + Math.floor((S.stage - 1) / 3));
+const buyCost = () => Math.ceil(6 * Math.pow(1.07, S.buys));
+const rebirthGain = () => S.stage >= 5 ? (S.stage - 3) * (S.stage - 3) : 0;
+const upCost = k => S.up[k] + 1;
+
+// 部隊が装備する銃（上位5丁）
+function equipped() {
+  const idx = [];
+  for (let i = 0; i < 12; i++) if (S.grid[i]) idx.push(i);
+  idx.sort((a, b) => S.grid[b] - S.grid[a] || a - b);
+  return idx.slice(0, 5);
+}
+function totalDPS() {
+  return equipped().reduce((s, i) => s + gunDPS(S.grid[i]), 0) * atkMul();
+}
+
+// ---------- 音（WebAudio・ファイルなし） ----------
+let AC = null, lastShotSnd = 0;
+function audio() {
+  if (!AC) { try { AC = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { AC = null; } }
+  if (AC && AC.state === "suspended") AC.resume();
+}
+function beep(freq, dur, type = "square", vol = 0.05, slide = 0) {
+  if (!AC || S.mute) return;
+  const t = AC.currentTime;
+  const o = AC.createOscillator(), g = AC.createGain();
+  o.type = type; o.frequency.setValueAtTime(freq, t);
+  if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(30, freq + slide), t + dur);
+  g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g); g.connect(AC.destination); o.start(t); o.stop(t + dur + 0.02);
+}
+function noise(dur, vol = 0.05, hp = 800) {
+  if (!AC || S.mute) return;
+  const t = AC.currentTime, n = Math.floor(AC.sampleRate * dur);
+  const b = AC.createBuffer(1, n, AC.sampleRate), d = b.getChannelData(0);
+  for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / n);
+  const s = AC.createBufferSource(), f = AC.createBiquadFilter(), g = AC.createGain();
+  f.type = "highpass"; f.frequency.value = hp; g.gain.value = vol;
+  s.buffer = b; s.connect(f); f.connect(g); g.connect(AC.destination); s.start(t);
+}
+function sndShot() {
+  const now = performance.now();
+  if (now - lastShotSnd < 70) return;
+  lastShotSnd = now; noise(0.05, 0.035, 1500);
+}
+const sndBuy = () => { beep(660, 0.08); setTimeout(() => beep(990, 0.1), 60); };
+const sndMerge = () => { beep(523, 0.08, "triangle", 0.08); setTimeout(() => beep(784, 0.08, "triangle", 0.08), 70); setTimeout(() => beep(1046, 0.14, "triangle", 0.08), 140); };
+const sndFell = () => { beep(300, 0.35, "sawtooth", 0.05, -220); noise(0.25, 0.05, 300); };
+const sndBoom = () => noise(0.3, 0.08, 120);
+const sndNo = () => beep(160, 0.15, "square", 0.05);
+
+// ---------- 実行中の状態 ----------
+let scene = "title";          // title / play
+let modal = null;             // null / "upgrade" / "rebirth" / {type:"offline",coins} / {type:"msg",...}
+let tHP = 0, tMax = 1;        // 木の体力
+let treeName = "";
+let bossT = 0;                // ボスの経過時間
+let falling = 0;              // 倒れるアニメーション（>0 の間は倒れ中）
+let grow = 1;                 // 新しい木が生えるアニメーション
+let shake = 0, hitFlash = 0;
+let bullets = [], parts = [], floats = [], beams = [];
+let bubbles = [];             // 吹き出し {who:"tree"|soldierIndex, text, t}
+let fireT = [0, 0, 0, 0, 0], recoil = [0, 0, 0, 0, 0];
+let coinEarnWindow = 0, coinWindowT = 0;
+let drag = null;              // {from, lv, x, y, sx, sy, moved}
+let pressed = null;           // 押しているボタン
+let toast = null;             // {text, t}
+let time = 0;
+let L = null;                 // レイアウト
+
+function newTree() {
+  tMax = treeHP(S.stage, S.tree);
+  tHP = tMax;
+  treeName = S.tree === 10 ? "御神木" : pick(TREE_NAMES);
+  bossT = 0; grow = 0; falling = 0;
+  if (S.tree === 10) {
+    say("tree", "……来たか");
+    setTimeout(() => say(0, "罰当たりでは…？"), 900);
+  }
+}
+
+function say(who, text) {
+  bubbles = bubbles.filter(b => b.who !== who);
+  bubbles.push({ who, text, t: 2.2 });
+}
+function floatText(x, y, text, color, size = 16) {
+  floats.push({ x, y, text, color, size, t: 1 });
+  if (floats.length > 40) floats.shift();
+}
+function showToast(text) { toast = { text, t: 2.2 }; }
+
+// ---------- レイアウト ----------
+function layout() {
+  const topH = 54;
+  const land = W >= 820 && W > H * 1.1;
+  const o = { land, top: { x: 0, y: 0, w: W, h: topH } };
+  let pw, px, py, ph;
+  if (land) {
+    pw = Math.min(440, Math.max(340, W * 0.36));
+    o.battle = { x: 0, y: topH, w: W - pw, h: H - topH };
+    px = W - pw; py = topH; ph = H - topH;
+  } else {
+    pw = W; px = 0;
+  }
+  const inner = Math.min(pw - 32, 420);
+  let slot = Math.min((inner - 24) / 4, 84);
+  const btnH = 50, gap = 12, btn2H = 46;
+  let need = 14 + btnH + gap + (slot * 3 + 16) + gap + btn2H + 18;
+  if (!land) {
+    // 戦闘エリアが小さくなりすぎないように調整
+    const minBattle = Math.max(210, H * 0.36);
+    if (H - topH - need < minBattle) {
+      const over = minBattle - (H - topH - need);
+      slot = Math.max(50, slot - over / 3);
+      need = 14 + btnH + gap + (slot * 3 + 16) + gap + btn2H + 18;
+    }
+    ph = need; py = H - ph;
+    o.battle = { x: 0, y: topH, w: W, h: py - topH };
+  }
+  o.panel = { x: px, y: py, w: pw, h: ph };
+  const gw = slot * 4 + 24;
+  const cx = px + pw / 2;
+  let y = land ? py + Math.max(14, (ph - need) / 2) : py + 14;
+  const bw = gw;
+  o.buy = { x: cx - bw / 2, y, w: bw * 0.62 - 5, h: btnH };
+  o.merge = { x: cx - bw / 2 + bw * 0.62 + 5, y, w: bw * 0.38 - 5, h: btnH };
+  y += btnH + gap;
+  o.gridBox = { x: cx - gw / 2 - 8, y, w: gw + 16, h: slot * 3 + 16 };
+  o.slots = [];
+  for (let i = 0; i < 12; i++) {
+    const c = i % 4, r = Math.floor(i / 4);
+    o.slots.push({ x: cx - gw / 2 + c * (slot + 8), y: y + 8 + r * (slot + 8), w: slot, h: slot });
+  }
+  y += slot * 3 + 16 + gap;
+  o.upg = { x: cx - bw / 2, y, w: bw / 2 - 5, h: btn2H };
+  o.reb = { x: cx + 5, y, w: bw / 2 - 5, h: btn2H };
+  o.mute = { x: W - 48, y: 9, w: 38, h: 36 };
+  o.slot = slot;
+  // 戦闘シーンの配置
+  const b = o.battle;
+  o.sc = clamp(Math.min(b.h / 250, b.w / 380), 0.6, 1.5);
+  o.ground = b.y + b.h * 0.8;
+  o.treeX = b.x + b.w * (land ? 0.74 : 0.76);
+  return o;
+}
+
+function soldierPos(k, n) {
+  // 2列にずらして並べる
+  const b = L.battle, sc = L.sc;
+  const front = k % 2 === 0;
+  const col = Math.floor(k / 2);
+  const startX = b.x + b.w * 0.1 + 18 * sc;
+  const step = Math.min(58 * sc, (b.w * 0.42) / 3);
+  const x = startX + col * step + (front ? step * 0.45 : 0);
+  const y = L.ground + (front ? 6 * sc : -10 * sc);
+  return { x, y, front };
+}
+function treeS() {
+  const want = L.sc * (S.tree === 10 ? 1.35 : 1);
+  return Math.min(want, (L.ground - L.battle.y - 70) / 205);
+}
+function treeHitPoint() {
+  const sc = treeS();
+  return { x: L.treeX - 10 * sc, y: L.ground - 60 * sc };
+}
+
+// ---------- 発射 ----------
+function fire(k, lv, pos) {
+  const g = GUNS[lv], sc = L.sc;
+  const dmg = gunDPS(lv) * atkMul() / (g.rate * g.pellets);
+  const mx = pos.x + 34 * sc * (0.6 + g.len * 0.5), my = pos.y - 38 * sc;
+  const hp = treeHitPoint();
+  recoil[k] = 1;
+  sndShot();
+  if (g.kind === "laser") {
+    beams.push({ x1: mx, y1: my, x2: hp.x, y2: hp.y + rand(-20, 20) * sc, c: g.bullet, t: 0.18, w: lv === 10 ? 6 : 3 });
+    hitTree(dmg, hp.x, hp.y);
+    return;
+  }
+  for (let p = 0; p < g.pellets; p++) {
+    const spread = g.kind === "pellet" ? rand(-26, 26) : rand(-8, 8);
+    const ty = hp.y + spread * sc;
+    const speed = (g.kind === "snipe" ? 1800 : g.kind === "rocket" ? 420 : g.kind === "band" ? 380 : 900) * sc;
+    const dx = hp.x - mx, dy = ty - my, d = Math.hypot(dx, dy) || 1;
+    bullets.push({ x: mx, y: my, vx: dx / d * speed, vy: dy / d * speed, tx: hp.x, dmg, kind: g.kind, c: g.bullet, rot: 0 });
+  }
+}
+
+function hitTree(dmg, x, y) {
+  if (falling > 0 || grow < 1) return;
+  tHP -= dmg;
+  shake = Math.min(6, shake + 1.5);
+  hitFlash = 0.08;
+  if (Math.random() < 0.25) floatText(x + rand(-14, 14), y + rand(-20, 10), fmt(Math.max(1, dmg)), "#fff", 13);
+  if (Math.random() < 0.012 && !bubbles.some(b => b.who === "tree")) say("tree", pick(S.tree === 10 ? BOSS_LINES : TREE_LINES));
+  if (tHP <= 0) fellTree();
+}
+
+function fellTree() {
+  tHP = 0;
+  falling = 1;
+  const boss = S.tree === 10;
+  const gain = Math.ceil(tMax * (boss ? 2 : 0.9) * coinMul());
+  S.coins += gain;
+  coinEarnWindow += gain;
+  sndFell();
+  const hp = treeHitPoint();
+  floatText(hp.x, hp.y - 50 * L.sc, "+" + fmt(gain), "#ffd84d", 22);
+  for (let i = 0; i < 10; i++) parts.push({ x: hp.x + rand(-20, 20), y: hp.y + rand(-30, 30), vx: rand(-120, 120), vy: rand(-260, -80), t: rand(0.6, 1.1), c: "#ffd84d", s: rand(3, 5), g: 600, coin: true });
+  for (let i = 0; i < 14; i++) parts.push({ x: hp.x + rand(-40, 40), y: hp.y + rand(-60, 0), vx: rand(-80, 80), vy: rand(-120, 40), t: rand(0.8, 1.6), c: LEAF[(S.stage - 1) % LEAF.length][i % 2], s: rand(3, 6), g: 120 });
+  if (boss) {
+    say(0, "御神木、伐採完了…！");
+    showToast(`ステージ ${S.stage} クリア！`);
+  } else if (Math.random() < 0.3) say(Math.floor(Math.random() * Math.min(5, equipped().length)), pick(["伐採完了！", "次の木だ！", "木、倒れました！", "任務継続！"]));
+}
+
+function nextTree() {
+  S.tree++;
+  if (S.tree > 10) {
+    S.tree = 1; S.stage++;
+    if (S.stage > S.best) S.best = S.stage;
+    if (S.stage === 5 && S.rebirths === 0) setTimeout(() => showToast("転生が解放されました"), 2400);
+    if (buyLevel() > 1 && (S.stage - 1) % 3 === 0) setTimeout(() => showToast(`買える銃が Lv${buyLevel()} に！`), 1200);
+  }
+  newTree();
+  save();
+}
+
+// ---------- 操作 ----------
+function buy() {
+  const cost = buyCost();
+  const i = S.grid.indexOf(0);
+  if (i < 0) { sndNo(); showToast("置き場がいっぱい（合成しよう）"); return; }
+  if (S.coins < cost) { sndNo(); showToast("コインが足りない"); return; }
+  S.coins -= cost; S.buys++;
+  S.grid[i] = buyLevel();
+  sndBuy();
+  const s = L.slots[i];
+  for (let k = 0; k < 8; k++) parts.push({ x: s.x + s.w / 2, y: s.y + s.h / 2, vx: rand(-90, 90), vy: rand(-90, 90), t: 0.4, c: "#fff3b0", s: 3, g: 0 });
+}
+function mergeInto(a, b) { // a を b に合成
+  const lv = S.grid[b];
+  S.grid[b] = lv + 1; S.grid[a] = 0;
+  sndMerge();
+  const s = L.slots[b];
+  for (let k = 0; k < 14; k++) parts.push({ x: s.x + s.w / 2, y: s.y + s.h / 2, vx: rand(-160, 160), vy: rand(-160, 160), t: 0.5, c: LV_COL[lv + 1], s: 4, g: 0 });
+  floatText(s.x + s.w / 2, s.y, "Lv" + (lv + 1), LV_COL[lv + 1], 16);
+  if (lv + 1 === MAX_LV) setTimeout(() => showToast("最強の銃『割り箸鉄砲』が完成"), 300);
+}
+function mergeAll() {
+  let any = false, again = true;
+  while (again) {
+    again = false;
+    for (let a = 0; a < 12 && !again; a++) {
+      if (!S.grid[a] || S.grid[a] >= MAX_LV) continue;
+      for (let b = a + 1; b < 12; b++) {
+        if (S.grid[b] === S.grid[a]) { mergeInto(b, a); any = again = true; break; }
+      }
+    }
+  }
+  if (!any) { sndNo(); showToast("合成できる銃がない"); }
+  save();
+}
+function doRebirth() {
+  const gain = rebirthGain();
+  const keep = { ame: S.ame + gain, up: S.up, rebirths: S.rebirths + 1, best: S.best, mute: S.mute };
+  S = freshRun(keep);
+  bullets = []; beams = []; bubbles = [];
+  newTree();
+  save();
+  sndMerge();
+  showToast(`転生した！ アメジスト +${gain}`);
+  setTimeout(() => say(0, "…また木を撃つのか"), 1500);
+}
+function tapTree() {
+  const dmg = Math.max(1, totalDPS() * 0.08);
+  const hp = treeHitPoint();
+  noise(0.04, 0.05, 900);
+  floatText(hp.x + rand(-20, 20), hp.y + rand(-40, 0), fmt(dmg), "#ffef9a", 18);
+  hitTree(dmg, hp.x, hp.y);
+}
+
+// ---------- 入力 ----------
+function modalButtons() {
+  // モーダルのボタン位置
+  const mw = Math.min(360, W - 32), mh = modal === "upgrade" ? 330 : 230;
+  const mx = W / 2 - mw / 2, my = H / 2 - mh / 2;
+  const o = { box: { x: mx, y: my, w: mw, h: mh } };
+  if (modal === "upgrade") {
+    ["atk", "spd", "coin"].forEach((k, i) => { o[k] = { x: mx + mw - 112, y: my + 70 + i * 74, w: 96, h: 50 }; });
+    o.close = { x: mx + 16, y: my + mh - 58, w: mw - 32, h: 44 };
+  } else if (modal === "rebirth") {
+    o.ok = { x: mx + 16, y: my + mh - 58, w: mw / 2 - 22, h: 44 };
+    o.close = { x: mx + mw / 2 + 6, y: my + mh - 58, w: mw / 2 - 22, h: 44 };
+  } else {
+    o.close = { x: mx + 16, y: my + mh - 58, w: mw - 32, h: 44 };
+  }
+  return o;
+}
+
+function pos(e) { return { x: e.clientX, y: e.clientY }; }
+
+cv.addEventListener("pointerdown", e => {
+  audio();
+  const p = pos(e);
+  if (scene === "title") { startGame(); return; }
+  if (modal) {
+    const m = modalButtons();
+    if (modal === "upgrade") {
+      for (const k of ["atk", "spd", "coin"]) if (inRect(p.x, p.y, m[k])) {
+        const c = upCost(k);
+        if (S.ame >= c) { S.ame -= c; S.up[k]++; sndBuy(); save(); } else sndNo();
+        return;
+      }
+    }
+    if (modal === "rebirth" && inRect(p.x, p.y, m.ok)) { modal = null; doRebirth(); return; }
+    if (inRect(p.x, p.y, m.close) || !inRect(p.x, p.y, m.box)) { modal = null; beep(500, 0.05); }
+    return;
+  }
+  if (inRect(p.x, p.y, L.mute)) { S.mute = !S.mute; save(); return; }
+  if (inRect(p.x, p.y, L.buy)) { pressed = "buy"; buy(); return; }
+  if (inRect(p.x, p.y, L.merge)) { pressed = "merge"; mergeAll(); return; }
+  if (inRect(p.x, p.y, L.upg)) { pressed = "upg"; modal = "upgrade"; beep(700, 0.05); return; }
+  if (inRect(p.x, p.y, L.reb)) {
+    pressed = "reb";
+    if (S.stage >= 5) { modal = "rebirth"; beep(700, 0.05); } else { sndNo(); showToast("ステージ5で転生できます"); }
+    return;
+  }
+  for (let i = 0; i < 12; i++) {
+    if (S.grid[i] && inRect(p.x, p.y, L.slots[i])) {
+      drag = { from: i, lv: S.grid[i], x: p.x, y: p.y, sx: p.x, sy: p.y, moved: false };
+      cv.setPointerCapture(e.pointerId);
+      return;
+    }
+  }
+  if (inRect(p.x, p.y, L.battle)) tapTree();
+});
+cv.addEventListener("pointermove", e => {
+  if (!drag) return;
+  const p = pos(e);
+  drag.x = p.x; drag.y = p.y;
+  if (Math.hypot(p.x - drag.sx, p.y - drag.sy) > 6) drag.moved = true;
+});
+function endDrag(e) {
+  pressed = null;
+  if (!drag) return;
+  const p = pos(e);
+  let to = -1;
+  for (let i = 0; i < 12; i++) if (inRect(p.x, p.y, L.slots[i])) to = i;
+  const from = drag.from;
+  if (to >= 0 && to !== from) {
+    if (S.grid[to] === S.grid[from] && S.grid[to] < MAX_LV) mergeInto(from, to);
+    else { const t = S.grid[to]; S.grid[to] = S.grid[from]; S.grid[from] = t; beep(440, 0.04); }
+    save();
+  } else if (!drag.moved) {
+    showToast(`Lv${S.grid[from]} ${GUNS[S.grid[from]].name}（同じLvに重ねて合成）`);
+  }
+  drag = null;
+}
+cv.addEventListener("pointerup", endDrag);
+cv.addEventListener("pointercancel", () => { drag = null; pressed = null; });
+addEventListener("keydown", e => {
+  if (scene === "title" && (e.key === "Enter" || e.key === " ")) { audio(); startGame(); }
+  else if (scene === "play" && !modal) {
+    if (e.key === "b") buy();
+    if (e.key === "m") mergeAll();
+  }
+});
+document.addEventListener("visibilitychange", () => { if (document.hidden && scene === "play") save(); });
+
+function startGame() {
+  scene = "play";
+  // 放置ボーナス（最大2時間ぶん）
+  if (hadSave && S.lastSave) {
+    const sec = Math.min(7200, (Date.now() - S.lastSave) / 1000);
+    const bonus = Math.floor(S.coinRate * sec * 0.5);
+    if (sec > 60 && bonus > 0) {
+      S.coins += bonus;
+      modal = { type: "offline", coins: bonus, min: Math.floor(sec / 60) };
+    }
+  }
+  newTree();
+  save();
+  setTimeout(() => say(0, pick(["目標、前方の木！", "本日も木を撃つ！"])), 500);
+}
+
+// ---------- 更新 ----------
+function update(dt) {
+  time += dt;
+  if (toast) { toast.t -= dt; if (toast.t <= 0) toast = null; }
+  for (const b of bubbles) b.t -= dt;
+  bubbles = bubbles.filter(b => b.t > 0);
+  for (const f of floats) { f.t -= dt * 0.9; f.y -= 30 * dt; }
+  floats = floats.filter(f => f.t > 0);
+  for (const p of parts) { p.t -= dt; p.x += p.vx * dt; p.y += p.vy * dt; p.vy += (p.g || 0) * dt; }
+  parts = parts.filter(p => p.t > 0);
+  if (parts.length > 260) parts.splice(0, parts.length - 260);
+  for (const b of beams) b.t -= dt;
+  beams = beams.filter(b => b.t > 0);
+  if (scene !== "play") return;
+
+  // コイン/秒の記録（放置ボーナス用）
+  coinWindowT += dt;
+  if (coinWindowT >= 10) {
+    const r = coinEarnWindow / coinWindowT;
+    S.coinRate = S.coinRate ? S.coinRate * 0.7 + r * 0.3 : r;
+    coinEarnWindow = 0; coinWindowT = 0;
+  }
+
+  shake = Math.max(0, shake - dt * 30);
+  hitFlash = Math.max(0, hitFlash - dt);
+  if (grow < 1) grow = Math.min(1, grow + dt * 3);
+  if (falling > 0) {
+    falling -= dt * 1.3;
+    if (falling <= 0) { falling = 0; nextTree(); }
+  }
+
+  // ボスの制限時間
+  if (S.tree === 10 && falling === 0 && grow >= 1 && !modal) {
+    bossT += dt;
+    if (bossT >= BOSS_TIME) {
+      say("tree", "ふぉっふぉっふぉ");
+      showToast("御神木は倒れなかった…（最初から）");
+      sndNo();
+      S.tree = 1; newTree(); save();
+    }
+  }
+
+  // 部隊の射撃
+  const eq = equipped();
+  for (let k = 0; k < eq.length; k++) {
+    const lv = S.grid[eq[k]];
+    const g = GUNS[lv];
+    recoil[k] = Math.max(0, recoil[k] - dt * 8);
+    fireT[k] -= dt;
+    if (fireT[k] <= 0) {
+      fireT[k] += 1 / (g.rate * spdMul());
+      if (fireT[k] < 0) fireT[k] = 0;
+      if (falling === 0 && grow >= 1) fire(k, lv, soldierPos(k, eq.length));
+    }
+  }
+  if (Math.random() < dt * 0.06 && eq.length && !bubbles.some(b => b.who !== "tree")) say(Math.floor(Math.random() * eq.length), pick(SOLDIER_LINES));
+
+  // 弾
+  for (const b of bullets) {
+    b.x += b.vx * dt; b.y += b.vy * dt; b.rot += dt * 10;
+    if (b.kind === "rocket") {
+      b.vx *= 1 + dt * 1.5; b.vy *= 1 + dt * 1.5;
+      if (Math.random() < 0.6) parts.push({ x: b.x, y: b.y, vx: rand(-20, 20), vy: rand(-20, 20), t: 0.35, c: "rgba(200,200,200,0.7)", s: rand(3, 5), g: -30 });
+    }
+    if (b.x >= b.tx) {
+      b.dead = true;
+      hitTree(b.dmg, b.x, b.y);
+      const n = b.kind === "rocket" ? 16 : 3;
+      for (let i = 0; i < n; i++) parts.push({ x: b.x, y: b.y, vx: rand(-150, 60), vy: rand(-150, 150), t: b.kind === "rocket" ? 0.5 : 0.18, c: b.kind === "rocket" ? pick(["#ff7a3d", "#ffd84d", "#ff4d2e"]) : "#e8c48a", s: b.kind === "rocket" ? rand(4, 8) : 2.5, g: 0 });
+      if (b.kind === "rocket") { sndBoom(); shake = 8; }
+    }
+  }
+  bullets = bullets.filter(b => !b.dead);
+  if (bullets.length > 400) bullets.splice(0, bullets.length - 400);
+}
+
+// ---------- 描画：キャラクター ----------
+function drawGun(x, y, sc, lv, rec) {
+  const g = GUNS[lv];
+  const len = 34 * sc * g.len, th = 6 * sc;
+  ctx.save();
+  ctx.translate(x - rec * 4 * sc, y);
+  ctx.fillStyle = g.color;
+  if (g.kind === "band") {
+    // 割り箸鉄砲：割り箸を輪ゴムで留めただけ
+    ctx.fillStyle = "#e8cf9a";
+    ctx.fillRect(0, -th * 0.4, len, th * 0.35);
+    ctx.fillRect(0, th * 0.05, len, th * 0.35);
+    ctx.save(); ctx.translate(3 * sc, 0); ctx.rotate(1.2);
+    ctx.fillRect(0, -th * 0.2, len * 0.45, th * 0.35); ctx.restore();
+    ctx.strokeStyle = "#d9534f"; ctx.lineWidth = 1.6 * sc;
+    ctx.beginPath(); ctx.moveTo(len * 0.95, -th * 0.4); ctx.lineTo(len * 0.2, -th * 0.4); ctx.stroke();
+    ctx.restore(); return;
+  }
+  // 持ち手
+  rr(-2 * sc, 0, 6 * sc, 10 * sc, 2 * sc); ctx.fill();
+  // 本体
+  rr(-4 * sc, -th / 2, len * 0.55, th, 2 * sc); ctx.fill();
+  // 銃身
+  if (g.kind === "pellet") {
+    ctx.fillRect(0, -th / 2, len, th * 0.42);
+    ctx.fillRect(0, th * 0.08, len, th * 0.42);
+  } else if (lv === 7) {
+    // ミニガン：束ねた銃身
+    for (let i = -1; i <= 1; i++) ctx.fillRect(len * 0.3, i * th * 0.32 - th * 0.14, len * 0.7, th * 0.28);
+  } else if (g.kind === "rocket") {
+    rr(-len * 0.25, -th * 0.9, len * 1.15, th * 1.5, th * 0.6); ctx.fill();
+    ctx.fillStyle = "#ff7a3d"; ctx.beginPath(); ctx.arc(len * 0.95, -th * 0.15, th * 0.55, 0, 7); ctx.fill();
+  } else {
+    ctx.fillRect(len * 0.4, -th * 0.28, len * 0.6, th * 0.56);
+  }
+  // ストック
+  if (g.len >= 0.9 && g.kind !== "rocket") { rr(-len * 0.25, -th * 0.35, len * 0.22, th * 1.1, 2 * sc); ctx.fill(); }
+  // スコープ
+  if (g.kind === "snipe" || lv === 10) { ctx.fillStyle = "#111"; rr(len * 0.1, -th * 1.25, len * 0.35, th * 0.6, 2 * sc); ctx.fill(); }
+  // 光る銃口
+  if (g.kind === "laser" || g.kind === "ring") {
+    ctx.fillStyle = g.bullet; ctx.globalAlpha = 0.6 + 0.4 * Math.sin(time * 10);
+    ctx.beginPath(); ctx.arc(len, 0, th * 0.45, 0, 7); ctx.fill(); ctx.globalAlpha = 1;
+  }
+  ctx.restore();
+}
+
+function drawSoldier(x, y, sc, lv, rec, k) {
+  const bob = Math.sin(time * 3 + k * 1.7) * 1.2 * sc;
+  ctx.save();
+  // 影
+  ctx.fillStyle = "rgba(0,0,0,0.22)";
+  ctx.beginPath(); ctx.ellipse(x, y, 16 * sc, 4 * sc, 0, 0, 7); ctx.fill();
+  // 足
+  ctx.fillStyle = "#2c3324";
+  rr(x - 9 * sc, y - 20 * sc, 7 * sc, 20 * sc, 2 * sc); ctx.fill();
+  rr(x + 2 * sc, y - 20 * sc, 7 * sc, 20 * sc, 2 * sc); ctx.fill();
+  ctx.fillStyle = "#1b1b1b";
+  rr(x - 11 * sc, y - 4 * sc, 10 * sc, 5 * sc, 2 * sc); ctx.fill();
+  rr(x + 2 * sc, y - 4 * sc, 10 * sc, 5 * sc, 2 * sc); ctx.fill();
+  // 胴体
+  const by = y - 46 * sc + bob;
+  ctx.fillStyle = "#4e6b3a";
+  rr(x - 13 * sc, by, 26 * sc, 29 * sc, 6 * sc); ctx.fill();
+  ctx.fillStyle = "#3f5830";
+  ctx.fillRect(x - 13 * sc, by + 17 * sc, 26 * sc, 4 * sc); // ベルト
+  // 頭
+  const hy = by - 11 * sc;
+  ctx.fillStyle = "#f1c9a0";
+  ctx.beginPath(); ctx.arc(x + 1 * sc, hy, 11 * sc, 0, 7); ctx.fill();
+  // ヘルメット
+  ctx.fillStyle = "#3d5a2e";
+  ctx.beginPath(); ctx.arc(x + 1 * sc, hy - 2 * sc, 12.5 * sc, Math.PI, 0); ctx.fill();
+  ctx.fillRect(x - 12 * sc, hy - 3 * sc, 27 * sc, 3 * sc);
+  // サングラス（真顔）
+  ctx.fillStyle = "#111";
+  rr(x + 1 * sc, hy + 1 * sc, 12 * sc, 4.5 * sc, 1.5 * sc); ctx.fill();
+  ctx.fillStyle = "#555"; ctx.fillRect(x + 3 * sc, hy + 1.8 * sc, 3 * sc, 1.2 * sc);
+  ctx.strokeStyle = "#7a4a30"; ctx.lineWidth = 1.4 * sc;
+  ctx.beginPath(); ctx.moveTo(x + 5 * sc, hy + 8 * sc); ctx.lineTo(x + 11 * sc, hy + 8 * sc); ctx.stroke();
+  // 腕と銃
+  const gy = by + 9 * sc;
+  ctx.fillStyle = "#4e6b3a";
+  rr(x + 2 * sc, gy - 3 * sc, 16 * sc, 7 * sc, 3 * sc); ctx.fill();
+  drawGun(x + 14 * sc, gy, sc, lv, rec);
+  ctx.fillStyle = "#f1c9a0";
+  ctx.beginPath(); ctx.arc(x + 16 * sc, gy + 3 * sc, 3.2 * sc, 0, 7); ctx.fill();
+  // マズルフラッシュ
+  if (rec > 0.6 && GUNS[lv].kind !== "laser" && GUNS[lv].kind !== "band") {
+    const mx = x + 14 * sc + 34 * sc * GUNS[lv].len;
+    ctx.fillStyle = "rgba(255,220,90,0.9)";
+    ctx.beginPath(); ctx.arc(mx + 4 * sc, gy, 5 * sc * rec, 0, 7); ctx.fill();
+  }
+  // レベル表示
+  ctx.fillStyle = LV_COL[lv];
+  rr(x - 13 * sc, y + 5 * sc, 26 * sc, 13 * sc, 4 * sc); ctx.fill();
+  txt("Lv" + lv, x, y + 11.5 * sc, Math.max(9, 9 * sc), "#16202a", "center", 800);
+  ctx.restore();
+}
+
+function drawTree(cx, gy, sc, boss) {
+  const leaf = LEAF[(S.stage - 1) % LEAF.length];
+  let rot = 0, alpha = 1;
+  if (falling > 0) { const p = 1 - falling; rot = p * p * 1.45; alpha = falling < 0.25 ? falling / 0.25 : 1; }
+  const g = grow < 1 ? 1 - Math.pow(1 - grow, 3) : 1;
+  const sx = shake ? Math.sin(time * 90) * shake * 0.6 : 0;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.translate(cx + sx, gy);
+  ctx.rotate(rot);
+  ctx.scale(g, g);
+  const s = sc;
+  // 影
+  if (falling === 0) { ctx.fillStyle = "rgba(0,0,0,0.25)"; ctx.beginPath(); ctx.ellipse(0, 0, 44 * s, 8 * s, 0, 0, 7); ctx.fill(); }
+  // 幹
+  ctx.fillStyle = boss ? "#6b4428" : "#8a5a32";
+  ctx.beginPath();
+  ctx.moveTo(-20 * s, 0); ctx.lineTo(-13 * s, -95 * s); ctx.lineTo(13 * s, -95 * s); ctx.lineTo(20 * s, 0);
+  ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = "rgba(0,0,0,0.18)"; ctx.lineWidth = 2 * s;
+  ctx.beginPath(); ctx.moveTo(-6 * s, -10 * s); ctx.lineTo(-4 * s, -40 * s); ctx.moveTo(7 * s, -30 * s); ctx.lineTo(5 * s, -70 * s); ctx.stroke();
+  // 葉
+  const blobs = [[0, -130, 46], [-34, -108, 32], [34, -108, 32], [-20, -150, 30], [22, -152, 30], [0, -100, 30]];
+  for (let i = 0; i < blobs.length; i++) {
+    const [bx, by, br] = blobs[i];
+    ctx.fillStyle = leaf[i % 2];
+    ctx.beginPath(); ctx.arc(bx * s, by * s, br * s, 0, 7); ctx.fill();
+  }
+  // 顔（幹）
+  const hurt = hitFlash > 0 || falling > 0;
+  ctx.fillStyle = "#2a1a10"; ctx.strokeStyle = "#2a1a10"; ctx.lineWidth = 2 * s;
+  if (hurt) {
+    ctx.beginPath();
+    ctx.moveTo(-10 * s, -64 * s); ctx.lineTo(-4 * s, -60 * s); ctx.lineTo(-10 * s, -56 * s);
+    ctx.moveTo(10 * s, -64 * s); ctx.lineTo(4 * s, -60 * s); ctx.lineTo(10 * s, -56 * s);
+    ctx.stroke();
+    ctx.beginPath(); ctx.ellipse(0, -44 * s, 4 * s, 5 * s, 0, 0, 7); ctx.fill();
+  } else {
+    ctx.beginPath(); ctx.arc(-7 * s, -60 * s, 2.6 * s, 0, 7); ctx.arc(7 * s, -60 * s, 2.6 * s, 0, 7); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(-5 * s, -46 * s); ctx.lineTo(5 * s, -46 * s); ctx.stroke();
+  }
+  // 御神木のしめ縄
+  if (boss) {
+    ctx.strokeStyle = "#e9d9a6"; ctx.lineWidth = 5 * s;
+    ctx.beginPath(); ctx.moveTo(-17 * s, -28 * s); ctx.quadraticCurveTo(0, -20 * s, 17 * s, -28 * s); ctx.stroke();
+    ctx.fillStyle = "#fff";
+    for (const px of [-9, 0, 9]) {
+      ctx.beginPath(); ctx.moveTo(px * s - 3 * s, -24 * s); ctx.lineTo(px * s + 3 * s, -24 * s);
+      ctx.lineTo(px * s + 1 * s, -17 * s); ctx.lineTo(px * s + 4 * s, -17 * s); ctx.lineTo(px * s, -9 * s); ctx.lineTo(px * s - 3 * s, -17 * s);
+      ctx.closePath(); ctx.fill();
+    }
+  }
+  ctx.restore();
+}
+
+function drawBubble(x, y, text, sc) {
+  ctx.font = `700 ${Math.round(13 * clamp(sc, 0.85, 1.2))}px ${FONT}`;
+  const w = ctx.measureText(text).width + 18, h = 26 * clamp(sc, 0.85, 1.2);
+  let bx = clamp(x - w / 2, L.battle.x + 6, L.battle.x + L.battle.w - w - 6);
+  const by = y - h - 8;
+  ctx.fillStyle = "rgba(255,255,255,0.95)";
+  ctx.strokeStyle = "rgba(31,41,51,0.55)"; ctx.lineWidth = 1.5;
+  rr(bx, by, w, h, 10); ctx.fill(); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x - 5, by + h - 1); ctx.lineTo(x, by + h + 7); ctx.lineTo(x + 5, by + h - 1); ctx.fill();
+  txt(text, bx + w / 2, by + h / 2 + 1, Math.round(13 * clamp(sc, 0.85, 1.2)), "#1f2933");
+}
+
+// ---------- 描画：アイコン ----------
+function drawCoin(x, y, r) {
+  ctx.fillStyle = "#f5b82e"; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill();
+  ctx.fillStyle = "#ffd96a"; ctx.beginPath(); ctx.arc(x, y, r * 0.68, 0, 7); ctx.fill();
+  ctx.fillStyle = "#d9971a"; ctx.fillRect(x - r * 0.12, y - r * 0.42, r * 0.24, r * 0.84);
+}
+function drawGem(x, y, r) {
+  ctx.fillStyle = "#9b5cf0";
+  ctx.beginPath(); ctx.moveTo(x, y - r); ctx.lineTo(x + r * 0.85, y - r * 0.2); ctx.lineTo(x, y + r); ctx.lineTo(x - r * 0.85, y - r * 0.2); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = "#c9a2ff";
+  ctx.beginPath(); ctx.moveTo(x, y - r); ctx.lineTo(x + r * 0.85, y - r * 0.2); ctx.lineTo(x, y - r * 0.1); ctx.lineTo(x - r * 0.85, y - r * 0.2); ctx.closePath(); ctx.fill();
+}
+
+// ---------- 描画：画面 ----------
+function drawBattle() {
+  const b = L.battle, sc = L.sc;
+  // 空
+  const sky = ctx.createLinearGradient(0, b.y, 0, L.ground);
+  sky.addColorStop(0, "#8fd0f0"); sky.addColorStop(1, "#d8f0e8");
+  ctx.fillStyle = sky; ctx.fillRect(b.x, b.y, b.w, b.h);
+  // 雲
+  ctx.fillStyle = "rgba(255,255,255,0.85)";
+  for (let i = 0; i < 3; i++) {
+    const cx = b.x + ((time * (8 + i * 4) + i * 260) % (b.w + 200)) - 100, cy = b.y + 30 + i * 26;
+    ctx.beginPath(); ctx.arc(cx, cy, 16, 0, 7); ctx.arc(cx + 20, cy - 6, 20, 0, 7); ctx.arc(cx + 42, cy, 15, 0, 7); ctx.fill();
+  }
+  // 遠くの森
+  ctx.fillStyle = "#7fbf8a";
+  for (let x = b.x - 20; x < b.x + b.w + 40; x += 38) {
+    ctx.beginPath(); ctx.arc(x, L.ground - 6, 30, Math.PI, 0); ctx.fill();
+  }
+  // 地面
+  ctx.fillStyle = "#7cb35a"; ctx.fillRect(b.x, L.ground - 6, b.w, b.y + b.h - L.ground + 6);
+  ctx.fillStyle = "#6aa04a"; ctx.fillRect(b.x, L.ground + 14 * sc, b.w, b.y + b.h - L.ground);
+  // 切り株（倒した木の数ぶん）
+  ctx.fillStyle = "#a07040";
+  for (let i = 1; i < S.tree; i++) {
+    const sx = L.treeX + 30 * sc + i * 14 * sc;
+    if (sx > b.x + b.w - 6) break;
+    rr(sx - 5 * sc, L.ground - 4 * sc, 10 * sc, 8 * sc, 2 * sc); ctx.fill();
+  }
+
+  ctx.save();
+  ctx.beginPath(); ctx.rect(b.x, b.y, b.w, b.h); ctx.clip();
+
+  if (scene === "play") {
+    const boss = S.tree === 10;
+    drawTree(L.treeX, L.ground, treeS(), boss);
+    // 部隊（後列→前列の順に描く）
+    const eq = equipped();
+    const order = eq.map((_, k) => k).sort((a, c) => soldierPos(a, eq.length).y - soldierPos(c, eq.length).y);
+    for (const k of order) {
+      const p = soldierPos(k, eq.length);
+      drawSoldier(p.x, p.y, sc, S.grid[eq[k]], recoil[k], k);
+    }
+    // 弾
+    for (const bl of bullets) {
+      ctx.fillStyle = bl.c;
+      if (bl.kind === "rocket") {
+        ctx.save(); ctx.translate(bl.x, bl.y); ctx.rotate(Math.atan2(bl.vy, bl.vx));
+        rr(-9 * sc, -3 * sc, 18 * sc, 6 * sc, 3 * sc); ctx.fill(); ctx.restore();
+      } else if (bl.kind === "ring") {
+        ctx.strokeStyle = bl.c; ctx.lineWidth = 2.5 * sc;
+        ctx.beginPath(); ctx.arc(bl.x, bl.y, 5 * sc, 0, 7); ctx.stroke();
+      } else if (bl.kind === "band") {
+        ctx.save(); ctx.translate(bl.x, bl.y); ctx.rotate(bl.rot);
+        ctx.strokeStyle = "#d9534f"; ctx.lineWidth = 2 * sc;
+        ctx.beginPath(); ctx.ellipse(0, 0, 7 * sc, 3 * sc, 0, 0, 7); ctx.stroke(); ctx.restore();
+      } else {
+        const len = bl.kind === "snipe" ? 22 : 8;
+        const sp = Math.hypot(bl.vx, bl.vy) || 1;
+        ctx.strokeStyle = bl.c; ctx.lineWidth = (bl.kind === "pellet" ? 2.5 : 3) * sc; ctx.lineCap = "round";
+        ctx.beginPath(); ctx.moveTo(bl.x, bl.y); ctx.lineTo(bl.x - bl.vx / sp * len * sc, bl.y - bl.vy / sp * len * sc); ctx.stroke();
+      }
+    }
+    for (const bm of beams) {
+      ctx.globalAlpha = clamp(bm.t / 0.18, 0, 1);
+      ctx.strokeStyle = bm.c; ctx.lineWidth = bm.w * sc; ctx.lineCap = "round";
+      ctx.beginPath(); ctx.moveTo(bm.x1, bm.y1); ctx.lineTo(bm.x2, bm.y2); ctx.stroke();
+      ctx.strokeStyle = "#fff"; ctx.lineWidth = bm.w * sc * 0.35;
+      ctx.beginPath(); ctx.moveTo(bm.x1, bm.y1); ctx.lineTo(bm.x2, bm.y2); ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+  }
+  for (const p of parts) {
+    ctx.globalAlpha = clamp(p.t * 2, 0, 1);
+    if (p.coin) drawCoin(p.x, p.y, p.s * 1.4);
+    else { ctx.fillStyle = p.c; ctx.fillRect(p.x - p.s / 2, p.y - p.s / 2, p.s, p.s); }
+  }
+  ctx.globalAlpha = 1;
+
+  if (scene === "play") {
+    // 木の名前と体力
+    const boss = S.tree === 10;
+    const s2 = treeS();
+    const barW = Math.min(150 * sc, b.w * 0.36), bx = clamp(L.treeX - barW / 2, b.x + 8, b.x + b.w - barW - 8);
+    const by = Math.max(b.y + 38, L.ground - 196 * s2);
+    txt(treeName, bx + barW / 2, by - 12, Math.round(14 * clamp(sc, 0.9, 1.2)), boss ? "#8a1c1c" : "#1f3a24");
+    ctx.fillStyle = "rgba(0,0,0,0.35)"; rr(bx, by, barW, 12, 6); ctx.fill();
+    ctx.fillStyle = boss ? "#e04848" : "#5fd068";
+    rr(bx + 2, by + 2, Math.max(0, (barW - 4) * (tHP / tMax)), 8, 4); ctx.fill();
+    txt(fmt(Math.max(0, tHP)), bx + barW / 2, by + 6.5, 10, "#fff", "center", 800);
+    // ボスの制限時間
+    if (boss && falling === 0) {
+      const left = Math.max(0, BOSS_TIME - bossT);
+      const tw = Math.min(220, b.w * 0.6), tx = b.x + b.w / 2 - tw / 2, ty = b.y + b.h - 32;
+      ctx.fillStyle = "rgba(0,0,0,0.45)"; rr(tx, ty, tw, 22, 11); ctx.fill();
+      ctx.fillStyle = left < 8 ? "#ff5a5a" : "#ffd84d"; rr(tx + 3, ty + 3, (tw - 6) * left / BOSS_TIME, 16, 8); ctx.fill();
+      txt(`御神木 残り ${Math.ceil(left)}秒`, tx + tw / 2, ty + 11.5, 12, "#fff");
+    }
+    // 吹き出し
+    const eq = equipped();
+    for (const bu of bubbles) {
+      if (bu.who === "tree") {
+        drawBubble(L.treeX - 40 * s2, L.ground - 96 * s2, bu.text, sc);
+      } else if (bu.who < eq.length) {
+        const p = soldierPos(bu.who, eq.length);
+        drawBubble(p.x, p.y - 68 * sc, bu.text, sc);
+      }
+    }
+    // タップの案内（最初だけ）
+    if (S.stage === 1 && S.tree <= 2 && S.rebirths === 0) {
+      ctx.globalAlpha = 0.6 + 0.4 * Math.sin(time * 4);
+      txt("木をタップしても攻撃できる", L.treeX, L.ground + 30 * sc, 12, "#1f3a24");
+      ctx.globalAlpha = 1;
+    }
+  }
+  for (const f of floats) {
+    ctx.globalAlpha = clamp(f.t * 2, 0, 1);
+    ctx.font = `900 ${f.size}px ${FONT}`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.lineWidth = 3; ctx.strokeStyle = "rgba(0,0,0,0.55)"; ctx.strokeText(f.text, f.x, f.y);
+    ctx.fillStyle = f.color; ctx.fillText(f.text, f.x, f.y);
+  }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
+function drawTop() {
+  const t = L.top;
+  ctx.fillStyle = "#16241b"; ctx.fillRect(t.x, t.y, t.w, t.h);
+  const small = W < 420;
+  let x = 12;
+  // コイン
+  ctx.fillStyle = "rgba(255,255,255,0.08)"; rr(x, 10, small ? 108 : 140, 34, 17); ctx.fill();
+  drawCoin(x + 17, 27, 10);
+  txt(fmt(S.coins), x + 32, 27.5, 16, "#ffe9a8", "left", 800);
+  x += (small ? 108 : 140) + 8;
+  // アメジスト
+  ctx.fillStyle = "rgba(255,255,255,0.08)"; rr(x, 10, small ? 66 : 84, 34, 17); ctx.fill();
+  drawGem(x + 17, 27, 10);
+  txt(fmt(S.ame), x + 32, 27.5, 16, "#e3ccff", "left", 800);
+  x += (small ? 66 : 84) + 8;
+  // ステージ
+  const sx = Math.max(x + 4, W - 58);
+  txt(`ステージ ${S.stage}`, sx, 20, small ? 13 : 15, "#fff", "right", 800);
+  txt(S.tree === 10 ? "ボス：御神木" : `木 ${S.tree} / 10`, sx, 37, 11, "#9fc8a8", "right", 700);
+  // 音
+  const m = L.mute;
+  ctx.fillStyle = "rgba(255,255,255,0.1)"; rr(m.x, m.y, m.w, m.h, 10); ctx.fill();
+  ctx.fillStyle = "#dfe8e2";
+  const mx = m.x + 11, my = m.y + 18;
+  ctx.beginPath(); ctx.moveTo(mx, my - 4); ctx.lineTo(mx + 5, my - 4); ctx.lineTo(mx + 10, my - 9); ctx.lineTo(mx + 10, my + 9); ctx.lineTo(mx + 5, my + 4); ctx.lineTo(mx, my + 4); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = "#dfe8e2"; ctx.lineWidth = 2;
+  if (S.mute) { ctx.beginPath(); ctx.moveTo(mx + 13, my - 5); ctx.lineTo(mx + 19, my + 5); ctx.moveTo(mx + 19, my - 5); ctx.lineTo(mx + 13, my + 5); ctx.stroke(); }
+  else { ctx.beginPath(); ctx.arc(mx + 11, my, 6, -0.9, 0.9); ctx.stroke(); }
+}
+
+function button(r, label, sub, color, enabled, key) {
+  const down = pressed === key ? 2 : 0;
+  ctx.fillStyle = enabled ? "rgba(0,0,0,0.35)" : "rgba(0,0,0,0.2)";
+  rr(r.x, r.y + 3, r.w, r.h, 12); ctx.fill();
+  ctx.fillStyle = enabled ? color : "#55605a";
+  rr(r.x, r.y + down, r.w, r.h - 1, 12); ctx.fill();
+  if (sub) {
+    txt(label, r.x + r.w / 2, r.y + r.h * 0.36 + down, 15, enabled ? "#fff" : "#b8c2bc", "center", 800);
+    txt(sub, r.x + r.w / 2, r.y + r.h * 0.72 + down, 12, enabled ? "rgba(255,255,255,0.9)" : "#a0aaa4", "center", 700);
+  } else {
+    txt(label, r.x + r.w / 2, r.y + r.h / 2 + down, 15, enabled ? "#fff" : "#b8c2bc", "center", 800);
+  }
+}
+
+function drawSlotGun(cx, cy, size, lv) {
+  // スロットの中の銃アイコン
+  const g = GUNS[lv];
+  const sc = Math.min(size / 60, (size * 0.78) / (34 * g.len * 1.3));
+  ctx.save();
+  ctx.translate(cx - 34 * sc * g.len * 0.4, cy - 2 * sc);
+  drawGun(0, 0, sc, lv, 0);
+  ctx.restore();
+}
+
+function drawPanel() {
+  const p = L.panel;
+  ctx.fillStyle = "#22352a"; ctx.fillRect(p.x, p.y, p.w, p.h);
+  ctx.fillStyle = "rgba(255,255,255,0.06)"; ctx.fillRect(p.x, p.y, p.w, 2);
+  const cost = buyCost();
+  const canBuy = S.coins >= cost && S.grid.includes(0);
+  button(L.buy, `銃を買う（Lv${buyLevel()}）`, `コイン ${fmt(cost)}`, "#e0662c", canBuy, "buy");
+  button(L.merge, "まとめて合成", null, "#3f7fd0", true, "merge");
+  // 置き場
+  const gb = L.gridBox;
+  ctx.fillStyle = "rgba(0,0,0,0.22)"; rr(gb.x, gb.y, gb.w, gb.h, 14); ctx.fill();
+  const eq = equipped();
+  for (let i = 0; i < 12; i++) {
+    const s = L.slots[i], lv = S.grid[i];
+    const isDragFrom = drag && drag.from === i && drag.moved;
+    const target = drag && drag.moved && drag.from !== i && inRect(drag.x, drag.y, s);
+    const canMerge = drag && drag.moved && drag.from !== i && lv === drag.lv && lv < MAX_LV;
+    ctx.fillStyle = target ? (canMerge ? "#4f7f4a" : "#3f5048") : "#2f4538";
+    rr(s.x, s.y, s.w, s.h, 10); ctx.fill();
+    if (canMerge) { ctx.strokeStyle = "#ffe066"; ctx.lineWidth = 2.5; rr(s.x + 1, s.y + 1, s.w - 2, s.h - 2, 10); ctx.stroke(); }
+    if (!lv || isDragFrom) continue;
+    ctx.strokeStyle = LV_COL[lv]; ctx.lineWidth = 2;
+    rr(s.x + 1, s.y + 1, s.w - 2, s.h - 2, 10); ctx.stroke();
+    drawSlotGun(s.x + s.w / 2, s.y + s.h * 0.45, s.w, lv);
+    // レベル
+    ctx.fillStyle = LV_COL[lv]; rr(s.x + 4, s.y + 4, 30, 16, 8); ctx.fill();
+    txt("Lv" + lv, s.x + 19, s.y + 12.5, 10, "#16202a", "center", 900);
+    if (eq.includes(i)) {
+      ctx.fillStyle = "#ffd84d"; ctx.beginPath(); ctx.arc(s.x + s.w - 10, s.y + 11, 5, 0, 7); ctx.fill();
+    }
+    const nm = GUNS[lv].name;
+    const fs = s.w < 64 ? 8.5 : 10;
+    txt(nm.length > 7 ? nm.slice(0, 6) + "…" : nm, s.x + s.w / 2, s.y + s.h - 10, fs, "#cfe0d4", "center", 700);
+  }
+  button(L.upg, "強化", `アメジスト ${fmt(S.ame)}`, "#8a55d6", true, "upg");
+  const rg = rebirthGain();
+  button(L.reb, "転生", S.stage >= 5 ? `+${rg} アメジスト` : "ステージ5で解放", "#c0457a", S.stage >= 5, "reb");
+  // ドラッグ中の銃
+  if (drag && drag.moved) {
+    const sz = L.slot;
+    ctx.globalAlpha = 0.9;
+    ctx.fillStyle = "rgba(20,30,25,0.8)"; rr(drag.x - sz / 2, drag.y - sz / 2, sz, sz, 10); ctx.fill();
+    ctx.strokeStyle = LV_COL[drag.lv]; ctx.lineWidth = 2; rr(drag.x - sz / 2, drag.y - sz / 2, sz, sz, 10); ctx.stroke();
+    drawSlotGun(drag.x, drag.y, sz, drag.lv);
+    ctx.globalAlpha = 1;
+  }
+}
+
+function drawModal() {
+  if (!modal) return;
+  ctx.fillStyle = "rgba(0,0,0,0.55)"; ctx.fillRect(0, 0, W, H);
+  const m = modalButtons(), b = m.box;
+  ctx.fillStyle = "#f7f5ef"; rr(b.x, b.y, b.w, b.h, 18); ctx.fill();
+  if (modal === "upgrade") {
+    txt("永久強化", b.x + b.w / 2, b.y + 26, 18, "#1f2933", "center", 900);
+    ctx.save(); drawGem(b.x + b.w / 2 - 34, b.y + 50, 8); ctx.restore();
+    txt(`所持 ${fmt(S.ame)}`, b.x + b.w / 2 - 22, b.y + 50.5, 13, "#6b4fa0", "left", 800);
+    const rows = [["atk", "攻撃力", `+${S.up.atk * 25}%`, "1段階 +25%"], ["spd", "連射速度", `+${S.up.spd * 10}%`, "1段階 +10%"], ["coin", "コイン獲得", `+${S.up.coin * 25}%`, "1段階 +25%"]];
+    rows.forEach(([k, name, now, step], i) => {
+      const y = b.y + 70 + i * 74;
+      ctx.fillStyle = "#e9e5da"; rr(b.x + 14, y - 4, b.w - 28, 58, 12); ctx.fill();
+      txt(`${name}  Lv${S.up[k]}`, b.x + 28, y + 14, 15, "#1f2933", "left", 800);
+      txt(`今 ${now}（${step}）`, b.x + 28, y + 36, 12, "#5b6670", "left", 600);
+      const r = m[k], ok = S.ame >= upCost(k);
+      ctx.fillStyle = ok ? "#8a55d6" : "#b9b3c4"; rr(r.x, r.y, r.w, r.h, 10); ctx.fill();
+      drawGem(r.x + 22, r.y + r.h / 2, 7);
+      txt(String(upCost(k)), r.x + 36, r.y + r.h / 2 + 1, 15, "#fff", "left", 800);
+    });
+    button(m.close, "とじる", null, "#5b6670", true, "x");
+    txt("アメジストは転生でもらえます", b.x + b.w / 2, b.y + b.h - 70, 11, "#7a848d", "center", 600);
+  } else if (modal === "rebirth") {
+    txt("転生しますか？", b.x + b.w / 2, b.y + 30, 18, "#1f2933", "center", 900);
+    txt("コイン・銃・ステージは最初に戻ります", b.x + b.w / 2, b.y + 70, 13, "#3d4852", "center", 600);
+    txt("アメジストと永久強化はそのまま", b.x + b.w / 2, b.y + 92, 13, "#3d4852", "center", 600);
+    drawGem(b.x + b.w / 2 - 52, b.y + 132, 11);
+    txt(`+${rebirthGain()} もらえる`, b.x + b.w / 2 - 36, b.y + 133, 18, "#6b4fa0", "left", 900);
+    button(m.ok, "転生する", null, "#c0457a", true, "ok");
+    button(m.close, "やめる", null, "#5b6670", true, "x");
+  } else if (modal.type === "offline") {
+    txt("おかえりなさい", b.x + b.w / 2, b.y + 32, 18, "#1f2933", "center", 900);
+    txt(`留守の ${modal.min} 分間も、部隊は木を撃っていました`, b.x + b.w / 2, b.y + 72, 12, "#3d4852", "center", 600);
+    drawCoin(b.x + b.w / 2 - 60, b.y + 118, 13);
+    txt(`+${fmt(modal.coins)}`, b.x + b.w / 2 - 40, b.y + 119, 22, "#c98a10", "left", 900);
+    button(m.close, "受け取る", null, "#e0662c", true, "x");
+  }
+}
+
+function drawTitle() {
+  ctx.fillStyle = "rgba(10,20,14,0.55)"; ctx.fillRect(0, 0, W, H);
+  ctx.save();
+  if (L.land) ctx.translate(L.battle.x + L.battle.w / 2 - W / 2, 0);
+  const big = clamp(W / 9, 34, 64);
+  ctx.font = `900 ${big}px ${FONT}`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.lineWidth = 8; ctx.strokeStyle = "#1b2a1f"; ctx.strokeText("木、撃ちます。", W / 2, H * 0.3);
+  ctx.fillStyle = "#fff"; ctx.fillText("木、撃ちます。", W / 2, H * 0.3);
+  txt("人間の部隊が、ただの木をひたすら撃つ放置ゲーム", W / 2, H * 0.3 + big * 0.85, clamp(W / 30, 12, 16), "#d6efd9", "center", 700);
+  const lines = ["・部隊は勝手に木を撃ちます（放置でOK）",
+    "・同じLvの銃を重ねると合成して強くなる",
+    "・強い順に5丁を部隊が自動で装備",
+    "・10本目は御神木。30秒以内に倒そう",
+    "・ステージ5から転生して永久強化"];
+  const lw = Math.min(360, W - 40), lx = W / 2 - lw / 2, ly = H * 0.47;
+  ctx.fillStyle = "rgba(0,0,0,0.35)"; rr(lx, ly - 14, lw, lines.length * 26 + 18, 14); ctx.fill();
+  lines.forEach((l, i) => txt(l, lx + 16, ly + 8 + i * 26, 13, "#eef6ef", "left", 600));
+  ctx.globalAlpha = 0.65 + 0.35 * Math.sin(time * 4);
+  txt(hadSave ? "タップで続きから" : "タップではじめる", W / 2, Math.min(H - 40, ly + lines.length * 26 + 56), 18, "#ffe27a", "center", 900);
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
+function drawToast() {
+  if (!toast) return;
+  ctx.globalAlpha = clamp(toast.t * 3, 0, 1);
+  ctx.font = `800 14px ${FONT}`;
+  const w = Math.min(W - 24, ctx.measureText(toast.text).width + 32);
+  const y = L.battle.y + 40;
+  ctx.fillStyle = "rgba(20,30,25,0.88)"; rr(L.battle.x + L.battle.w / 2 - w / 2, y, w, 34, 17); ctx.fill();
+  txt(toast.text, L.battle.x + L.battle.w / 2, y + 17.5, 14, "#fff");
+  ctx.globalAlpha = 1;
+}
+
+// ---------- ループ ----------
+let last = performance.now();
+let autosave = 0;
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  L = layout();
+  update(dt);
+  autosave += dt;
+  if (autosave > 5 && scene === "play") { autosave = 0; save(); }
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  drawBattle();
+  drawPanel();
+  drawTop();
+  drawToast();
+  drawModal();
+  if (scene === "title") drawTitle();
+  requestAnimationFrame(frame);
+}
+L = layout();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
