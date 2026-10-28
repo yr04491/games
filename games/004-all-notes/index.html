@@ -1,0 +1,756 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>その音、全部ノーツ。</title>
+<link rel="icon" href="data:,">
+<style>
+  html,body{margin:0;height:100%;background:#0d0a19;overflow:hidden;touch-action:none;
+    font-family:system-ui,-apple-system,"Hiragino Sans","Noto Sans CJK JP","Noto Sans JP",sans-serif;
+    -webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
+  canvas{display:block;width:100vw;height:100vh}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+"use strict";
+// ============================================================
+//  その音、全部ノーツ。 — マイク入力の4レーン音ゲー（クソゲー）
+//  まわりで鳴っている音をマイクで拾い、聞こえた音をその場で譜面にする。
+//  低音〜高音を4つの帯域に分け、音の立ち上がりを検出してノーツを降らせる。
+//  曲のテンポを推定し、ノーツが「次の拍」に判定ラインへ届くよう落下時間を合わせる。
+//  画像・音声ファイルなし：すべてコードで描画・合成
+// ============================================================
+const cv = document.getElementById("c");
+const ctx = cv.getContext("2d");
+const FONT = 'system-ui,-apple-system,"Hiragino Sans","Noto Sans CJK JP","Noto Sans JP",sans-serif';
+
+let W = 0, H = 0, DPR = 1;
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = innerWidth; H = innerHeight;
+  cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
+}
+addEventListener("resize", resize);
+resize();
+
+// ---------- ユーティリティ ----------
+function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+function rand(a, b) { return a + Math.random() * (b - a); }
+function rr(x, y, w, h, r) {
+  r = Math.max(0, Math.min(r, w / 2, h / 2));
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+function txt(s, x, y, size, color, align = "center", weight = 700, base = "middle") {
+  ctx.font = `${weight} ${size}px ${FONT}`;
+  ctx.fillStyle = color; ctx.textAlign = align; ctx.textBaseline = base;
+  ctx.fillText(s, x, y);
+}
+function inRect(px, py, r) { return r && px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h; }
+
+// ---------- 設定 ----------
+const LANE_COLORS = ["#ff4d6d", "#ffb703", "#4cc9f0", "#b388ff"];
+const LANE_NAMES = ["低音", "中低音", "中高音", "高音"];
+const KEYS = ["d", "f", "j", "k"];
+const BANDS = [[30, 150], [150, 600], [600, 3000], [3000, 12000]]; // Hz
+const DIFFS = [
+  { name: "かんたん", k: 2.1, laneGap: 0.34, globalGap: 0.17, maxChord: 1, miss: 4, base: 1.45 },
+  { name: "ふつう",   k: 1.7, laneGap: 0.22, globalGap: 0.10, maxChord: 2, miss: 6, base: 1.15 },
+  { name: "むずい",   k: 1.3, laneGap: 0.14, globalGap: 0.05, maxChord: 2, miss: 8, base: 0.9 },
+];
+const JUDGES = [
+  { name: "PERFECT", w: 0.05, score: 1000, life: 1,   color: "#ffe066" },
+  { name: "GREAT",   w: 0.09, score: 700,  life: 0.5, color: "#7cf29c" },
+  { name: "GOOD",    w: 0.14, score: 300,  life: 0,   color: "#8ecae6" },
+];
+const MISS_W = 0.14;
+const GATE_RMS = 0.003; // これより静かなら音として扱わない
+
+// ---------- 状態 ----------
+let scene = "title";
+let diff = 1;
+let mode = "mic";
+let titleMsg = "";
+let buttons = [];
+
+let actx = null, analyser = null, micStream = null, master = null, demoTimer = null, noiseBuf = null;
+let freqDb = null, prevMag = null, td = null, binHz = 0;
+let fluxHist, fluxPrev, lastAnalyze = 0, prevFrameT = 0;
+let notes = [], particles = [], pops = [], rings = [];
+let laneLast, globalLast;
+let envLog = [], bpm = 0, bpmCand = 0, bpmStable = 0, travel = 1.15, lastBpmCalc = 0;
+let level = 0, lastOnsetAt = 0, detected = 0;
+let score = 0, combo = 0, maxCombo = 0, life = 100, counts, startTime = 0, endReason = "";
+let laneFlash = [0, 0, 0, 0];
+const spec = new Float32Array(28);
+
+function now() { return actx ? actx.currentTime : performance.now() / 1000; }
+const micSupported = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+
+// ============================================================
+//  音声まわり
+// ============================================================
+async function startGame(m) {
+  mode = m; titleMsg = "";
+  cleanupAudio();
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    actx = new AC({ latencyHint: "interactive" });
+    const resumed = actx.resume(); // タップ中に呼ぶ（iOS対策）
+    analyser = actx.createAnalyser();
+    analyser.fftSize = 1024;
+    analyser.smoothingTimeConstant = 0;
+    freqDb = new Float32Array(analyser.frequencyBinCount);
+    prevMag = new Float32Array(analyser.frequencyBinCount);
+    td = new Float32Array(analyser.fftSize);
+    binHz = actx.sampleRate / analyser.fftSize;
+    if (m === "mic") {
+      micStream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+      });
+      actx.createMediaStreamSource(micStream).connect(analyser);
+    } else {
+      startDemo();
+    }
+    await resumed;
+    if (actx.state !== "running") await actx.resume();
+  } catch (e) {
+    cleanupAudio();
+    titleMsg = m === "mic" ? "マイクが使えませんでした。許可を確認してね" : "音が出せませんでした";
+    scene = "title";
+    return;
+  }
+  resetRun();
+  scene = "play";
+}
+
+function cleanupAudio() {
+  if (demoTimer) { clearInterval(demoTimer); demoTimer = null; }
+  if (micStream) { micStream.getTracks().forEach(tr => tr.stop()); micStream = null; }
+  if (actx) { try { actx.close(); } catch (e) {} }
+  actx = null; analyser = null; master = null;
+}
+
+// ---------- デモ曲（その場で合成する124BPMのループ） ----------
+function startDemo() {
+  master = actx.createGain();
+  master.gain.value = 0.45;
+  master.connect(analyser);
+  master.connect(actx.destination);
+  noiseBuf = actx.createBuffer(1, actx.sampleRate, actx.sampleRate);
+  const d = noiseBuf.getChannelData(0);
+  for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+
+  const step16 = 60 / 124 / 4;
+  let step = 0, nextT = actx.currentTime + 0.2;
+  let bar = { kicks: [], snares: [], hats: [], plucks: [], stabs: [] };
+  const roots = [196, 174.6, 220, 164.8];
+  function newBar(n) {
+    const v = n % 4;
+    bar = {
+      kicks: v === 3 ? [0, 4, 8, 10, 12, 14] : (Math.random() < 0.5 ? [0, 4, 8, 12] : [0, 4, 8, 11, 12]),
+      snares: v === 3 ? [4, 12, 13, 15] : [4, 12],
+      hats: Math.random() < 0.5 ? [2, 6, 10, 14] : [2, 3, 6, 7, 10, 11, 14, 15],
+      plucks: [0, 3, 6, 9, 14].filter(() => Math.random() < 0.8),
+      stabs: n % 2 === 0 ? [6] : [7, 15],
+      root: roots[Math.floor(n / 2) % roots.length],
+    };
+  }
+  newBar(0);
+  demoTimer = setInterval(() => {
+    if (!actx) return;
+    while (nextT < actx.currentTime + 0.12) {
+      const i = step % 16;
+      if (i === 0) newBar(Math.floor(step / 16));
+      if (bar.kicks.includes(i)) kick(nextT);
+      if (bar.snares.includes(i)) snare(nextT);
+      if (bar.hats.includes(i)) hat(nextT);
+      if (bar.plucks.includes(i)) pluck(nextT, bar.root * (i % 6 === 0 ? 1 : 1.5));
+      if (bar.stabs.includes(i)) stab(nextT, bar.root * 4);
+      step++; nextT += step16;
+    }
+  }, 25);
+}
+function env(g, t, peak, dur) {
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(peak, t + 0.004);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+}
+function kick(t) {
+  const o = actx.createOscillator(), g = actx.createGain();
+  o.frequency.setValueAtTime(150, t);
+  o.frequency.exponentialRampToValueAtTime(42, t + 0.12);
+  env(g, t, 1, 0.3);
+  o.connect(g).connect(master); o.start(t); o.stop(t + 0.32);
+}
+function noise(t, type, f, q, peak, dur) {
+  const s = actx.createBufferSource(), fl = actx.createBiquadFilter(), g = actx.createGain();
+  s.buffer = noiseBuf; fl.type = type; fl.frequency.value = f; fl.Q.value = q;
+  env(g, t, peak, dur);
+  s.connect(fl).connect(g).connect(master); s.start(t); s.stop(t + dur + 0.02);
+}
+function snare(t) { noise(t, "bandpass", 1800, 0.7, 0.9, 0.18); }
+function hat(t) { noise(t, "highpass", 7500, 0.5, 0.35, 0.05); }
+function pluck(t, f) {
+  const o = actx.createOscillator(), fl = actx.createBiquadFilter(), g = actx.createGain();
+  o.type = "square"; o.frequency.value = f;
+  fl.type = "lowpass"; fl.frequency.value = 700;
+  env(g, t, 0.35, 0.16);
+  o.connect(fl).connect(g).connect(master); o.start(t); o.stop(t + 0.2);
+}
+function stab(t, f) {
+  [1, 1.26, 1.5].forEach(m => {
+    const o = actx.createOscillator(), fl = actx.createBiquadFilter(), g = actx.createGain();
+    o.type = "sawtooth"; o.frequency.value = f * m;
+    fl.type = "bandpass"; fl.frequency.value = 1400; fl.Q.value = 0.8;
+    env(g, t, 0.18, 0.22);
+    o.connect(fl).connect(g).connect(master); o.start(t); o.stop(t + 0.25);
+  });
+}
+
+// ============================================================
+//  音の解析：帯域ごとのスペクトル変化量から「音の立ち上がり」を見つける
+// ============================================================
+function analyze(t) {
+  analyser.getFloatFrequencyData(freqDb);
+  analyser.getFloatTimeDomainData(td);
+  let sq = 0;
+  for (let i = 0; i < td.length; i++) sq += td[i] * td[i];
+  const rms = Math.sqrt(sq / td.length);
+  level = Math.max(rms, level * 0.9);
+
+  const n = freqDb.length;
+  const flux = [0, 0, 0, 0];
+  for (let b = 0; b < 4; b++) {
+    const lo = Math.max(1, Math.ceil(BANDS[b][0] / binHz));
+    const hi = Math.min(n - 1, Math.floor(BANDS[b][1] / binHz));
+    for (let i = lo; i <= hi; i++) {
+      const db = freqDb[i];
+      const m = db > -160 ? Math.pow(10, db / 20) : 0;
+      const dd = m - prevMag[i];
+      if (dd > 0) flux[b] += dd;
+      prevMag[i] = m;
+    }
+    flux[b] /= Math.sqrt(hi - lo + 1);
+  }
+  // 背景のスペクトル表示用（対数間隔）
+  for (let k = 0; k < spec.length; k++) {
+    const f = 40 * Math.pow(12000 / 40, k / (spec.length - 1));
+    const i = Math.min(n - 1, Math.round(f / binHz));
+    const v = clamp((freqDb[i] + 95) / 65, 0, 1);
+    spec[k] = Math.max(v, spec[k] * 0.86);
+  }
+
+  const D = DIFFS[diff];
+  const found = [];
+  let envV = 0;
+  for (let b = 0; b < 4; b++) {
+    const h = fluxHist[b];
+    const f1 = fluxPrev[b][0], f2 = fluxPrev[b][1], f0 = flux[b];
+    if (h.length > 30) {
+      let mean = 0; for (const v of h) mean += v; mean /= h.length;
+      let vr = 0; for (const v of h) vr += (v - mean) * (v - mean); vr /= h.length;
+      const sd = Math.sqrt(vr);
+      const thr = Math.max(mean + D.k * sd, mean * 1.6, 1e-6);
+      if (rms > GATE_RMS) envV += Math.min(4, Math.max(0, (f1 - mean) / (sd + 1e-9)));
+      if (rms > GATE_RMS && f1 > thr && f1 >= f2 && f1 >= f0) {
+        found.push({ lane: b, s: (f1 - mean) / (sd + 1e-9) });
+      }
+    }
+    h.push(f0); if (h.length > 80) h.shift();
+    fluxPrev[b][1] = f1; fluxPrev[b][0] = f0;
+  }
+  envLog.push({ t: prevFrameT || t, v: envV });
+  if (found.length) handleOnsets(found, prevFrameT || t);
+  prevFrameT = t;
+
+  if (t - lastBpmCalc > 1) { estimateBpm(t); lastBpmCalc = t; }
+}
+
+function handleOnsets(found, t) {
+  const D = DIFFS[diff];
+  detected += found.length;
+  lastOnsetAt = t;
+
+  found.sort((a, b) => b.s - a.s);
+  let made = 0;
+  for (const o of found) {
+    if (made >= D.maxChord) break;
+    if (t - laneLast[o.lane] < D.laneGap) continue;
+    if (made === 0 && t - globalLast < D.globalGap) continue;
+    spawnNote(o.lane, t);
+    laneLast[o.lane] = t;
+    made++;
+  }
+  if (made) globalLast = t;
+}
+
+// マイクは検出が少し遅れ、デモは解析がスピーカーより先に進むので、そのぶん補正する
+function latencyFix() {
+  if (mode === "mic") return -0.06;
+  return (actx.outputLatency || actx.baseLatency || 0.02) - 0.02;
+}
+function spawnNote(lane, t) {
+  notes.push({ lane, travel, hit: t + travel + latencyFix(), done: false });
+}
+
+// ---------- テンポ推定：音の立ち上がりの強さを並べ、自己相関で「拍の長さ」を探す ----------
+// 候補テンポごとに、1拍・2拍・半拍ずれた所の一致度を足して一番高いものを選ぶ
+function estimateBpm(t) {
+  envLog = envLog.filter(o => t - o.t < 8);
+  if (envLog.length < 100) return;
+  const STEP = 0.01, N = 800;
+  const e = new Float32Array(N);
+  const t0 = t - 8;
+  for (const o of envLog) {
+    const i = Math.floor((o.t - t0) / STEP);
+    // 少しのタイミングのブレを許すため、前後にぼかして置く
+    for (let d = -3; d <= 3; d++) {
+      const j = i + d;
+      if (j >= 0 && j < N) e[j] = Math.max(e[j], o.v * Math.exp(-d * d / 4));
+    }
+  }
+  let mean = 0; for (let i = 0; i < N; i++) mean += e[i]; mean /= N;
+  for (let i = 0; i < N; i++) e[i] -= mean;
+  const MAXL = 400;
+  const ac = new Float32Array(MAXL + 1);
+  for (let L = 10; L <= MAXL; L++) {
+    let sm = 0;
+    for (let i = 0; i + L < N; i++) sm += e[i] * e[i + L];
+    ac[L] = sm / (N - L);
+  }
+  const at = x => { const i = Math.floor(x), f = x - i; return i + 1 > MAXL ? 0 : ac[i] * (1 - f) + ac[i + 1] * f; };
+  let best = 0, bestScore = -Infinity, total = 0, cnt = 0;
+  for (let b = 80; b <= 160; b += 0.5) {
+    const p = 60 / b / STEP;
+    const sc = at(p) + 0.5 * at(2 * p) + 0.5 * at(p / 2) + 0.25 * at(4 * p);
+    total += sc; cnt++;
+    if (sc > bestScore) { bestScore = sc; best = b; }
+  }
+  if (bestScore <= 0 || bestScore < (total / cnt) * 1.5) return;
+  const cand = Math.round(best);
+  if (Math.abs(cand - bpmCand) <= 2) bpmStable++; else bpmStable = 0;
+  bpmCand = cand;
+  if (bpmStable >= 1) {
+    bpm = cand;
+    const per = 60 / bpm;
+    let k = Math.max(1, Math.round(DIFFS[diff].base / per));
+    while (k * per < 0.7) k++;
+    travel = k * per;
+  }
+}
+
+// ============================================================
+//  ゲーム進行
+// ============================================================
+function resetRun() {
+  notes = []; particles = []; pops = []; rings = [];
+  fluxHist = [[], [], [], []];
+  fluxPrev = [[0, 0], [0, 0], [0, 0], [0, 0]];
+  laneLast = [-9, -9, -9, -9]; globalLast = -9;
+  envLog = []; bpm = 0; bpmCand = 0; bpmStable = 0; travel = DIFFS[diff].base;
+  level = 0; detected = 0;
+  score = 0; combo = 0; maxCombo = 0; life = 100;
+  counts = { PERFECT: 0, GREAT: 0, GOOD: 0, MISS: 0 };
+  startTime = now(); lastOnsetAt = startTime; lastAnalyze = 0; lastBpmCalc = startTime; prevFrameT = 0;
+  spec.fill(0);
+}
+
+function endRun(reason) {
+  endReason = reason;
+  cleanupAudio();
+  scene = "result";
+}
+
+function press(lane) {
+  laneFlash[lane] = 1;
+  const t = now();
+  let best = null, bd = 9;
+  for (const n of notes) {
+    if (n.done || n.lane !== lane) continue;
+    const d = Math.abs(t - n.hit);
+    if (d < bd) { bd = d; best = n; }
+  }
+  if (!best || bd > MISS_W) return;
+  const j = JUDGES.find(j => bd <= j.w);
+  best.done = true;
+  combo++; maxCombo = Math.max(maxCombo, combo);
+  score += Math.round(j.score * (1 + Math.min(combo, 50) / 50));
+  life = Math.min(100, life + j.life);
+  counts[j.name]++;
+  hitFx(lane, j);
+}
+
+function hitFx(lane, j) {
+  const L = layout();
+  const x = L.fx + L.lw * (lane + 0.5);
+  pops.push({ lane, s: j.name, color: j.color, t: 0 });
+  rings.push({ x, y: L.judgeY, t: 0, color: LANE_COLORS[lane] });
+  for (let i = 0; i < 10; i++) {
+    const a = rand(-Math.PI, 0);
+    const sp = rand(120, 320);
+    particles.push({ x, y: L.judgeY, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, t: 0, color: LANE_COLORS[lane] });
+  }
+}
+
+function update(t, dt) {
+  const D = DIFFS[diff];
+  for (const n of notes) {
+    if (!n.done && t - n.hit > MISS_W) {
+      n.done = true; n.missed = true;
+      combo = 0; counts.MISS++;
+      life -= D.miss;
+      pops.push({ lane: n.lane, s: "MISS", color: "#8a8aa3", t: 0 });
+    }
+  }
+  notes = notes.filter(n => !n.done || (n.missed && t - n.hit < 0.4));
+  for (const p of particles) { p.t += dt; p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 600 * dt; }
+  particles = particles.filter(p => p.t < 0.45);
+  for (const p of pops) p.t += dt;
+  pops = pops.filter(p => p.t < 0.5);
+  for (const r of rings) r.t += dt;
+  rings = rings.filter(r => r.t < 0.3);
+  for (let i = 0; i < 4; i++) laneFlash[i] = Math.max(0, laneFlash[i] - dt * 6);
+  if (life <= 0) { life = 0; endRun("ライフがなくなった"); }
+}
+
+// ============================================================
+//  描画
+// ============================================================
+function layout() {
+  const fw = Math.min(W, 460);
+  const fx = (W - fw) / 2;
+  const wide = W >= 860;
+  const top = wide ? 72 : 100;
+  const judgeY = H - clamp(H * 0.15, 92, 140);
+  return { fw, fx, lw: fw / 4, top, judgeY, wide };
+}
+
+function drawBg() {
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, "#130d2a");
+  g.addColorStop(1, "#07060f");
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+}
+
+function button(x, y, w, h, label, opt = {}) {
+  rr(x, y, w, h, opt.r ?? h / 2);
+  if (opt.fill) { ctx.fillStyle = opt.fill; ctx.fill(); }
+  if (opt.stroke) { ctx.strokeStyle = opt.stroke; ctx.lineWidth = 2; ctx.stroke(); }
+  txt(label, x + w / 2, y + h / 2 + 1, opt.size || 17, opt.color || "#fff", "center", opt.weight || 800);
+  if (opt.act) buttons.push({ x, y, w, h, act: opt.act });
+}
+
+const deco = Array.from({ length: 22 }, () => ({ fx: Math.random(), off: Math.random(), sp: rand(0.12, 0.3), lane: Math.floor(Math.random() * 4) }));
+
+function drawTitle(t) {
+  drawBg();
+  // 背景で降るノーツ
+  for (const d of deco) {
+    const y = ((t * d.sp + d.off) % 1) * (H + 60) - 30;
+    ctx.globalAlpha = 0.18;
+    ctx.fillStyle = LANE_COLORS[d.lane];
+    rr(d.fx * W - 26, y, 52, 12, 6); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  const cx = W / 2;
+  const colW = Math.min(W - 32, 400);
+  const x0 = cx - colW / 2;
+  const size = clamp(W * 0.11, 34, 60);
+  let y = Math.max(56, H * 0.12) + size / 2;
+  txt("その音、", cx, y, size, "#ffffff", "center", 900);
+  y += size * 1.12;
+  const gr = ctx.createLinearGradient(cx - size * 3, 0, cx + size * 3, 0);
+  gr.addColorStop(0, LANE_COLORS[0]); gr.addColorStop(0.35, LANE_COLORS[1]);
+  gr.addColorStop(0.65, LANE_COLORS[2]); gr.addColorStop(1, LANE_COLORS[3]);
+  txt("全部ノーツ。", cx, y, size, gr, "center", 900);
+  y += size * 0.75 + 10;
+  txt("まわりで鳴ってる音を拾って、その場で譜面にする音ゲー", cx, y, clamp(W * 0.034, 12, 15), "#b9b3d6", "center", 600);
+
+  y += 38;
+  txt("難しさ", x0, y, 13, "#8f88b3", "left", 700);
+  y += 14;
+  const pw = (colW - 16) / 3;
+  DIFFS.forEach((d, i) => {
+    const sel = i === diff;
+    button(x0 + i * (pw + 8), y, pw, 42, d.name, {
+      fill: sel ? "#ffffff" : "rgba(255,255,255,0.06)", stroke: sel ? null : "rgba(255,255,255,0.18)",
+      color: sel ? "#1a1430" : "#d8d3f0", size: 15, act: () => { diff = i; }
+    });
+  });
+  y += 42 + 22;
+
+  if (micSupported) {
+    rr(x0, y, colW, 60, 30);
+    const bg = ctx.createLinearGradient(x0, 0, x0 + colW, 0);
+    bg.addColorStop(0, "#ff4d6d"); bg.addColorStop(1, "#9d4edd");
+    ctx.fillStyle = bg; ctx.fill();
+    txt("マイクで遊ぶ", cx, y + 31, 20, "#fff", "center", 900);
+    buttons.push({ x: x0, y, w: colW, h: 60, act: () => startGame("mic") });
+  } else {
+    button(x0, y, colW, 60, "マイクはHTTPSのページでのみ使えます", { fill: "rgba(255,255,255,0.08)", color: "#8f88b3", size: 14 });
+  }
+  y += 60 + 12;
+  button(x0, y, colW, 48, "デモ曲で遊ぶ（マイクなし）", { stroke: "rgba(255,255,255,0.35)", color: "#e8e4ff", size: 16, act: () => startGame("demo") });
+  y += 48 + 26;
+
+  if (titleMsg) { txt(titleMsg, cx, y, 14, "#ff8fa3", "center", 700); y += 26; }
+  const fs = clamp(W * 0.032, 12, 14);
+  const lines = [
+    "曲はPCやスピーカーなど、別の機器で流すのがおすすめ",
+    "（同じスマホで流すと、止まることがあります）",
+    "操作：レーンをタップ ／ キーボードの D F J K",
+  ];
+  for (const s of lines) { txt(s, cx, y, fs, "#8f88b3", "center", 500); y += fs + 9; }
+
+  button(16, H - 52, 104, 36, "← 一覧へ", { stroke: "rgba(255,255,255,0.2)", color: "#b9b3d6", size: 13, r: 18, act: () => { location.href = "../../"; } });
+}
+
+function drawPlay(t) {
+  drawBg();
+  const L = layout();
+  const { fw, fx, lw, top, judgeY } = L;
+
+  // フィールド
+  ctx.fillStyle = "rgba(255,255,255,0.03)";
+  ctx.fillRect(fx, 0, fw, H);
+  // スペクトル（背景）
+  const bw = fw / spec.length;
+  for (let k = 0; k < spec.length; k++) {
+    const h = spec[k] * (judgeY - top) * 0.55;
+    const lane = Math.min(3, Math.floor(k / spec.length * 4));
+    ctx.fillStyle = LANE_COLORS[lane];
+    ctx.globalAlpha = 0.09;
+    ctx.fillRect(fx + k * bw + 1, judgeY - h, bw - 2, h);
+  }
+  ctx.globalAlpha = 1;
+  for (let i = 0; i < 4; i++) {
+    const x = fx + i * lw;
+    if (i > 0) { ctx.fillStyle = "rgba(255,255,255,0.07)"; ctx.fillRect(x, top, 1, H - top); }
+    if (laneFlash[i] > 0) {
+      const g = ctx.createLinearGradient(0, judgeY, 0, top);
+      g.addColorStop(0, LANE_COLORS[i]); g.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.globalAlpha = laneFlash[i] * 0.35;
+      ctx.fillStyle = g; ctx.fillRect(x, top, lw, judgeY - top);
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  // コンボ
+  if (combo >= 5) {
+    txt(String(combo), fx + fw / 2, top + (judgeY - top) * 0.36, clamp(fw * 0.2, 56, 92), "rgba(255,255,255,0.13)", "center", 900);
+    txt("COMBO", fx + fw / 2, top + (judgeY - top) * 0.36 + clamp(fw * 0.12, 36, 56), 16, "rgba(255,255,255,0.2)", "center", 800);
+  }
+
+  // 判定ライン
+  ctx.fillStyle = "rgba(255,255,255,0.12)";
+  ctx.fillRect(fx, judgeY - 9, fw, 18);
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(fx, judgeY - 1.5, fw, 3);
+
+  // ノーツ
+  const nh = 16;
+  for (const n of notes) {
+    const p = 1 - (n.hit - t) / n.travel;
+    if (p < 0) continue;
+    const y = top + p * (judgeY - top);
+    const x = fx + n.lane * lw + 7;
+    ctx.globalAlpha = n.missed ? 0.25 : 1;
+    ctx.fillStyle = LANE_COLORS[n.lane];
+    ctx.globalAlpha *= 0.25;
+    rr(x - 3, y - nh / 2 - 3, lw - 8, nh + 6, 10); ctx.fill();
+    ctx.globalAlpha = n.missed ? 0.25 : 1;
+    rr(x, y - nh / 2, lw - 14, nh, 8); ctx.fill();
+    ctx.fillStyle = "rgba(255,255,255,0.55)";
+    rr(x + 6, y - nh / 2 + 3, lw - 26, 4, 2); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  // エフェクト
+  for (const r of rings) {
+    ctx.globalAlpha = 1 - r.t / 0.3;
+    ctx.strokeStyle = r.color; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(r.x, r.y, 14 + r.t * 140, 0, Math.PI * 2); ctx.stroke();
+  }
+  for (const p of particles) {
+    ctx.globalAlpha = 1 - p.t / 0.45;
+    ctx.fillStyle = p.color; ctx.fillRect(p.x - 2, p.y - 2, 4, 4);
+  }
+  for (const p of pops) {
+    ctx.globalAlpha = 1 - p.t / 0.5;
+    txt(p.s, fx + lw * (p.lane + 0.5), judgeY - 34 - p.t * 40, clamp(lw * 0.17, 12, 18), p.color, "center", 900);
+  }
+  ctx.globalAlpha = 1;
+
+  // レーン下のボタン
+  for (let i = 0; i < 4; i++) {
+    const x = fx + i * lw;
+    const by = judgeY + 14, bh = H - by - 12;
+    rr(x + 6, by, lw - 12, bh, 12);
+    ctx.fillStyle = laneFlash[i] > 0 ? LANE_COLORS[i] : "rgba(255,255,255,0.05)";
+    ctx.globalAlpha = laneFlash[i] > 0 ? 0.35 + laneFlash[i] * 0.4 : 1;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = LANE_COLORS[i]; ctx.globalAlpha = 0.5; ctx.lineWidth = 1.5; ctx.stroke(); ctx.globalAlpha = 1;
+    txt(LANE_NAMES[i], x + lw / 2, by + bh / 2 - (L.wide ? 9 : 0), clamp(lw * 0.13, 11, 14), "#e8e4ff", "center", 700);
+    if (L.wide) txt(KEYS[i].toUpperCase(), x + lw / 2, by + bh / 2 + 12, 13, "#8f88b3", "center", 800);
+  }
+
+  // 上部HUD
+  ctx.fillStyle = "rgba(10,8,22,0.85)";
+  ctx.fillRect(fx, 0, fw, L.wide ? 60 : 88);
+  txt(score.toLocaleString(), fx + 16, 24, 22, "#fff", "left", 900);
+  txt("SCORE", fx + 16, 44, 10, "#8f88b3", "left", 800);
+  // ライフ
+  const lx = fx + fw * 0.42, lwid = fw * 0.32;
+  rr(lx, 18, lwid, 10, 5); ctx.fillStyle = "rgba(255,255,255,0.1)"; ctx.fill();
+  rr(lx, 18, lwid * life / 100, 10, 5); ctx.fillStyle = life > 30 ? "#7cf29c" : "#ff4d6d"; ctx.fill();
+  txt("LIFE", lx, 40, 10, "#8f88b3", "left", 800);
+  // やめる
+  const sb = { x: fx + fw - 74, y: 12, w: 62, h: 32 };
+  button(sb.x, sb.y, sb.w, sb.h, "やめる", { stroke: "rgba(255,255,255,0.3)", color: "#e8e4ff", size: 13, r: 16, act: () => endRun("自分でやめた") });
+
+  const bpmTxt = bpm ? `BPM ${bpm}くらい` : "BPM 推定中…";
+  const modeTxt = mode === "mic" ? "マイク" : "デモ曲";
+  if (L.wide) {
+    // 左右のパネル
+    const pxL = fx - 24, pxR = fx + fw + 24;
+    txt(modeTxt, pxL, 90, 13, "#8f88b3", "right", 700);
+    txt(bpmTxt, pxL, 118, 20, "#fff", "right", 800);
+    txt("入力の大きさ", pxL, 154, 12, "#8f88b3", "right", 700);
+    meter(pxL - 160, 166, 160, 10);
+    txt(`拾った音 ${detected}`, pxL, 202, 13, "#b9b3d6", "right", 600);
+    const rows = ["PERFECT", "GREAT", "GOOD", "MISS"];
+    rows.forEach((r, i) => {
+      txt(r, pxR, 90 + i * 26, 13, i < 3 ? JUDGES[i].color : "#8a8aa3", "left", 800);
+      txt(String(counts[r]), pxR + 96, 90 + i * 26, 13, "#fff", "left", 700);
+    });
+    txt(`MAX COMBO ${maxCombo}`, pxR, 90 + 4 * 26 + 8, 13, "#b9b3d6", "left", 700);
+  } else {
+    txt(`${modeTxt} ・ ${bpmTxt}`, fx + 16, 72, 12, "#b9b3d6", "left", 700);
+    meter(fx + fw - 112, 67, 96, 8);
+  }
+
+  // 無音のとき
+  const silent = t - lastOnsetAt;
+  if (silent > 4) {
+    const bx = fx + 20, bwid = fw - 40, by = top + (judgeY - top) * 0.55;
+    rr(bx, by, bwid, 76, 14); ctx.fillStyle = "rgba(10,8,22,0.85)"; ctx.fill();
+    txt("……なにも聞こえない", fx + fw / 2, by + 26, 17, "#fff", "center", 800);
+    txt(mode === "mic" ? "スピーカーで曲を流してね（音量は大きめに）" : "音が出ているか確認してね", fx + fw / 2, by + 52, 12, "#b9b3d6", "center", 600);
+  } else if (level > 0.7) {
+    txt("音割れしてる。ちょっと下げて", fx + fw / 2, top + 16, 13, "#ffb703", "center", 800);
+  }
+}
+
+function meter(x, y, w, h) {
+  rr(x, y, w, h, h / 2); ctx.fillStyle = "rgba(255,255,255,0.1)"; ctx.fill();
+  const v = clamp((20 * Math.log10(level + 1e-6) + 60) / 60, 0, 1); // -60dB〜0dB
+  const gate = clamp((20 * Math.log10(GATE_RMS) + 60) / 60, 0, 1);
+  if (v > 0) { rr(x, y, w * v, h, h / 2); ctx.fillStyle = level > GATE_RMS ? "#4cc9f0" : "#5b5679"; ctx.fill(); }
+  ctx.fillStyle = "rgba(255,255,255,0.45)"; ctx.fillRect(x + w * gate, y - 2, 1.5, h + 4);
+}
+
+function rankOf() {
+  const total = counts.PERFECT + counts.GREAT + counts.GOOD + counts.MISS;
+  const acc = total ? (counts.PERFECT + counts.GREAT * 0.7 + counts.GOOD * 0.4) / total * 100 : 0;
+  const r = acc >= 92 ? "S" : acc >= 80 ? "A" : acc >= 65 ? "B" : acc >= 45 ? "C" : "D";
+  return { total, acc, r };
+}
+const COMMENTS = { S: "耳がいい。", A: "だいたい合ってる。", B: "ノリで押してない？", C: "音、聞いてる？", D: "それは音ゲーではない。" };
+
+function drawResult(t) {
+  drawBg();
+  const { total, acc, r } = rankOf();
+  const cx = W / 2;
+  const colW = Math.min(W - 32, 380);
+  const x0 = cx - colW / 2;
+  let y = Math.max(48, H * 0.08);
+  txt("RESULT", cx, y, 15, "#8f88b3", "center", 800);
+  y += 20;
+  txt(endReason, cx, y, 13, "#b9b3d6", "center", 600);
+  y += 72;
+  const rc = { S: "#ffe066", A: "#7cf29c", B: "#4cc9f0", C: "#b388ff", D: "#8a8aa3" }[r];
+  txt(r, cx, y, 96, rc, "center", 900);
+  y += 64;
+  txt(total < 15 ? "そもそも音がほぼ聞こえてなかった。" : COMMENTS[r], cx, y, 17, "#fff", "center", 800);
+  y += 34;
+  rr(x0, y, colW, 196, 16); ctx.fillStyle = "rgba(255,255,255,0.06)"; ctx.fill();
+  const rows = [
+    ["SCORE", score.toLocaleString(), "#fff"],
+    ["正確さ", `${acc.toFixed(1)}%`, "#fff"],
+    ["MAX COMBO", String(maxCombo), "#fff"],
+    ["PERFECT / GREAT", `${counts.PERFECT} / ${counts.GREAT}`, JUDGES[0].color],
+    ["GOOD / MISS", `${counts.GOOD} / ${counts.MISS}`, JUDGES[2].color],
+    ["推定BPM", bpm ? String(bpm) : "わからなかった", "#b9b3d6"],
+  ];
+  rows.forEach((row, i) => {
+    const ry = y + 22 + i * 30;
+    txt(row[0], x0 + 18, ry, 13, "#8f88b3", "left", 700);
+    txt(row[1], x0 + colW - 18, ry, 15, row[2], "right", 800);
+  });
+  y += 196 + 22;
+  const bw = (colW - 10) / 2;
+  button(x0, y, bw, 50, "もう一回", { fill: "#ffffff", color: "#1a1430", size: 16, act: () => startGame(mode) });
+  button(x0 + bw + 10, y, bw, 50, "タイトルへ", { stroke: "rgba(255,255,255,0.35)", color: "#e8e4ff", size: 16, act: () => { scene = "title"; } });
+}
+
+// ============================================================
+//  入力
+// ============================================================
+cv.addEventListener("pointerdown", e => {
+  e.preventDefault();
+  const x = e.clientX, y = e.clientY;
+  for (const b of buttons) if (inRect(x, y, b)) { b.act(); return; }
+  if (scene === "play") {
+    const L = layout();
+    if (y > L.top && x >= L.fx && x < L.fx + L.fw) press(Math.floor((x - L.fx) / L.lw));
+  }
+});
+addEventListener("keydown", e => {
+  if (e.repeat) return;
+  if (scene === "play") {
+    const i = KEYS.indexOf(e.key.toLowerCase());
+    if (i >= 0) press(i);
+    if (e.key === "Escape") endRun("自分でやめた");
+  }
+});
+addEventListener("pagehide", cleanupAudio);
+
+// 音の解析は画面の更新（60fps）より細かく、10msごとに行う
+setInterval(() => {
+  if (scene !== "play" || !analyser) return;
+  const t = now();
+  if (t - lastAnalyze >= 0.008) { analyze(t); lastAnalyze = t; }
+}, 10);
+
+// ============================================================
+//  メインループ
+// ============================================================
+let lastFrame = performance.now();
+function frame() {
+  requestAnimationFrame(frame);
+  const pn = performance.now();
+  const dt = Math.min(0.05, (pn - lastFrame) / 1000);
+  lastFrame = pn;
+  const t = now();
+  if (scene === "play" && analyser) update(t, dt);
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  buttons = [];
+  if (scene === "title") drawTitle(pn / 1000);
+  else if (scene === "play") drawPlay(t);
+  else drawResult(t);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
