@@ -1,0 +1,440 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>みずみち</title>
+<style>
+  html,body{margin:0;height:100%;background:#eaf3e2;overflow:hidden;touch-action:none;
+    font-family:system-ui,-apple-system,"Hiragino Sans","Noto Sans CJK JP","Noto Sans JP",sans-serif;
+    -webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
+  canvas{display:block;width:100vw;height:100vh}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script src="../../shared/medal.js"></script>
+<script>Medal.requireUnlock("013");</script>
+<script>
+"use strict";
+// ============================================================
+//  みずみち — タイルを回して水路をつなぐ、ゆったりパズル
+//  ・タイルをタップすると90度回る。源泉からすべての池へ水を届けたらクリア
+//  ・ステージは自動生成（必ず解ける形を作ってから向きをばらばらにする）
+//  ・10面ごとに季節が変わる。時間制限・手数制限なし
+//  ・画像ファイルなし：すべてコードで描画
+// ============================================================
+const cv = document.getElementById("c");
+const ctx = cv.getContext("2d");
+const FONT = 'system-ui,-apple-system,"Hiragino Sans","Noto Sans CJK JP","Noto Sans JP",sans-serif';
+
+let W = 0, H = 0, DPR = 1;
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = innerWidth; H = innerHeight;
+  cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
+}
+addEventListener("resize", resize);
+
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+const lerp = (a, b, t) => a + (b - a) * t;
+function mulberry(a) { return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+
+// ---------- 方向 ----------
+// 上=1、右=2、下=4、左=8
+const DX = [0, 1, 0, -1], DY = [-1, 0, 1, 0];
+const opp = d => (d + 2) % 4;
+const rotCW = m => ((m << 1) | (m >> 3)) & 15;
+const bits = m => (m & 1) + (m >> 1 & 1) + (m >> 2 & 1) + (m >> 3 & 1);
+
+// ---------- 季節 ----------
+const SEASONS = [
+  { name: "春", bg: ["#f3f7e8", "#fbe6ee"], grass: "#a9d18e", grass2: "#9cc982", edge: "#d9c7a7", dry: "#e8dcc4", water: "#6ec1ea", deco: "#f7a8c4", fall: "petal" },
+  { name: "夏", bg: ["#e6f6ff", "#e9f8e3"], grass: "#7fc26b", grass2: "#74b862", edge: "#cdbb98", dry: "#e2d5b6", water: "#3fa9e6", deco: "#ffe066", fall: "light" },
+  { name: "秋", bg: ["#fbefe0", "#f6e2cf"], grass: "#c9b16a", grass2: "#bfa55f", edge: "#c9ad86", dry: "#e8d6b8", water: "#5aa9d6", deco: "#e86f3c", fall: "leaf" },
+  { name: "冬", bg: ["#eef3f8", "#f8fbff"], grass: "#d6e1ea", grass2: "#cbd8e2", edge: "#9fadbd", dry: "#f4f7fa", water: "#7fb6e0", deco: "#ffffff", fall: "snow" },
+];
+const season = lv => SEASONS[Math.floor((lv - 1) / 10) % 4];
+
+// ---------- ステージ生成 ----------
+function sizeOf(lv) { return lv <= 5 ? 4 : lv <= 10 ? 5 : lv <= 15 ? 6 : lv <= 20 ? 7 : 8; }
+function pondsOf(lv, n) { return Math.min(1 + Math.floor((lv - 1) / 4), Math.floor(n * n / 8), 5); }
+
+function generate(lv) {
+  const rng = mulberry(lv * 7919 + 13);
+  const ri = k => Math.floor(rng() * k);
+  const n = sizeOf(lv), N = n * n;
+  const idx = (x, y) => y * n + x;
+  // ランダムな深さ優先で、全マスを通る木（迷路）を作る
+  const src = ri(N);
+  const sol = new Array(N).fill(0), parent = new Array(N).fill(-1), depth = new Array(N).fill(0), seen = new Array(N).fill(false);
+  const stack = [src]; seen[src] = true;
+  while (stack.length) {
+    const c = stack[stack.length - 1], cx = c % n, cy = c / n | 0;
+    const opts = [];
+    for (let d = 0; d < 4; d++) { const x = cx + DX[d], y = cy + DY[d]; if (x >= 0 && y >= 0 && x < n && y < n && !seen[idx(x, y)]) opts.push(d); }
+    if (!opts.length) { stack.pop(); continue; }
+    const d = opts[ri(opts.length)], nb = idx(cx + DX[d], cy + DY[d]);
+    seen[nb] = true; parent[nb] = c; depth[nb] = depth[c] + 1;
+    sol[c] |= 1 << d; sol[nb] |= 1 << opp(d);
+    stack.push(nb);
+  }
+  // 池：源泉から遠い行き止まりから選ぶ
+  const leaves = [];
+  for (let i = 0; i < N; i++) if (i !== src && bits(sol[i]) === 1) leaves.push(i);
+  leaves.sort((a, b) => depth[b] - depth[a]);
+  const pool = leaves.slice(0, Math.max(1, Math.ceil(leaves.length * 0.6)));
+  const ponds = [];
+  const want = pondsOf(lv, n);
+  while (ponds.length < want && pool.length) ponds.push(pool.splice(ri(pool.length), 1)[0]);
+  // 源泉から池までの道だけを残す
+  const keep = new Array(N).fill(false);
+  for (const p of ponds) { let c = p; while (c !== -1) { keep[c] = true; c = parent[c]; } }
+  const answer = new Array(N).fill(0);
+  for (let i = 0; i < N; i++) {
+    if (!keep[i]) continue;
+    const x = i % n, y = i / n | 0;
+    for (let d = 0; d < 4; d++) {
+      if (!(sol[i] & (1 << d))) continue;
+      const j = idx(x + DX[d], y + DY[d]);
+      if (keep[j]) answer[i] |= 1 << d;
+    }
+  }
+  // 道以外のマス：ダミーの水路か、ただの草地
+  const decoyRate = clamp(0.3 + lv * 0.02, 0.3, 0.75);
+  const SHAPES = [1, 5, 3, 3, 7];
+  const tiles = [];
+  for (let i = 0; i < N; i++) {
+    const t = { kind: "pipe", mask: answer[i], ans: answer[i], fixed: false, anim: 0, deco: ri(1000) };
+    if (i === src) { t.kind = "source"; t.fixed = true; }
+    else if (ponds.includes(i)) { t.kind = "pond"; t.fixed = true; }
+    else if (!keep[i]) {
+      if (rng() < decoyRate) { let m = SHAPES[ri(SHAPES.length)]; for (let r = ri(4); r > 0; r--) m = rotCW(m); t.mask = m; t.ans = -1; }
+      else { t.kind = "grass"; t.mask = 0; t.ans = -1; }
+    }
+    tiles.push(t);
+  }
+  // 向きをばらばらにする
+  for (const t of tiles) if (t.kind === "pipe") for (let r = ri(4); r > 0; r--) t.mask = rotCW(t.mask);
+  const P = { lv, n, tiles, src, ponds };
+  let guard = 0;
+  while (flow(P).solved && guard++ < 20) { const c = tiles.find(t => t.kind === "pipe" && t.ans > 0 && t.ans !== 15 && t.ans !== 5 && t.ans !== 10); if (c) c.mask = rotCW(c.mask); else break; }
+  return P;
+}
+
+// 源泉からつながっているマス（水が届くマス）
+function flow(P) {
+  const { n, tiles } = P, wet = new Array(n * n).fill(false);
+  const q = [P.src]; wet[P.src] = true;
+  while (q.length) {
+    const c = q.shift(), x = c % n, y = c / n | 0, m = tiles[c].mask;
+    for (let d = 0; d < 4; d++) {
+      if (!(m & (1 << d))) continue;
+      const nx = x + DX[d], ny = y + DY[d];
+      if (nx < 0 || ny < 0 || nx >= n || ny >= n) continue;
+      const j = ny * n + nx;
+      if (wet[j] || !(tiles[j].mask & (1 << opp(d)))) continue;
+      wet[j] = true; q.push(j);
+    }
+  }
+  return { wet, solved: P.ponds.every(p => wet[p]) };
+}
+
+// ---------- 音 ----------
+let AC = null, master = null, bgmOn = true, bgmT = 0;
+try { bgmOn = localStorage.getItem("kusoge013-bgm") !== "0"; } catch (e) { }
+function audio() {
+  if (!AC) { try { AC = new (window.AudioContext || window.webkitAudioContext)(); master = AC.createGain(); master.gain.value = 0.9; master.connect(AC.destination); } catch (e) { AC = null; } }
+  if (AC && AC.state === "suspended") AC.resume();
+}
+function note(freq, dur, vol, type = "sine", attack = 0.01) {
+  if (!AC) return;
+  const t = AC.currentTime, o = AC.createOscillator(), g = AC.createGain();
+  o.type = type; o.frequency.value = freq;
+  g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(vol, t + attack); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g).connect(master); o.start(t); o.stop(t + dur + 0.05);
+}
+const sndTap = () => note(520, 0.12, 0.05, "triangle");
+const sndFlow = () => note(rand(700, 900), 0.25, 0.04, "sine");
+const sndPond = () => [784, 988, 1175].forEach((f, i) => setTimeout(() => note(f, 0.6, 0.05), i * 90));
+const sndClear = () => [523, 659, 784, 1047, 1319].forEach((f, i) => setTimeout(() => note(f, 1.2, 0.05, "sine", 0.02), i * 140));
+function rand(a, b) { return a + Math.random() * (b - a); }
+const PENTA = [392, 440, 523, 587, 659, 784, 880];
+function bgmTick(dt) {
+  if (!AC || !bgmOn) return;
+  bgmT -= dt;
+  if (bgmT <= 0) { note(PENTA[Math.floor(Math.random() * PENTA.length)] / 2, 3.2, 0.03, "sine", 0.6); if (Math.random() < 0.5) note(PENTA[Math.floor(Math.random() * PENTA.length)], 2.4, 0.018, "sine", 0.4); bgmT = rand(1.4, 2.8); }
+}
+
+// ---------- 状態 ----------
+let scene = "title";       // title / play / clear
+let P = null, state = null, level = 1, taps = 0, clearT = 0;
+let saved = 1;
+try { saved = parseInt(localStorage.getItem("kusoge013-level") || "1", 10) || 1; } catch (e) { }
+function medal(n) { if (n > 0 && window.Medal) Medal.add(n); }
+
+function startLevel(lv) {
+  audio();
+  level = lv; P = generate(lv); taps = 0;
+  state = flow(P);
+  P.bloom = P.ponds.map(() => 0);
+  scene = "play";
+  try { localStorage.setItem("kusoge013-level", String(lv)); } catch (e) { }
+  saved = lv;
+}
+
+function rotateAt(i) {
+  const t = P.tiles[i];
+  if (t.fixed || t.kind !== "pipe" || scene !== "play") return;
+  t.mask = rotCW(t.mask); t.anim = 1; taps++;
+  sndTap();
+  afterChange();
+}
+function afterChange() {
+  const before = state.wet.filter(Boolean).length;
+  state = flow(P);
+  if (state.wet.filter(Boolean).length > before) sndFlow();
+  if (state.solved) {
+    scene = "clear"; clearT = 0;
+    sndClear();
+    medal(5);   // 共通メダル：1面クリアで5枚
+    try { localStorage.setItem("kusoge013-level", String(level + 1)); } catch (e) { }
+    saved = level + 1;
+  }
+}
+function hint() {
+  if (scene !== "play") return;
+  const { n, tiles } = P;
+  const wrong = tiles.map((t, i) => i).filter(i => tiles[i].kind === "pipe" && tiles[i].ans > 0 && tiles[i].mask !== tiles[i].ans);
+  if (!wrong.length) return;
+  // 水が届いているマスのとなりを優先
+  const near = wrong.filter(i => { const x = i % n, y = i / n | 0; return [0, 1, 2, 3].some(d => { const nx = x + DX[d], ny = y + DY[d]; return nx >= 0 && ny >= 0 && nx < n && ny < n && state.wet[ny * n + nx]; }); });
+  const i = (near.length ? near : wrong)[0];
+  const t = tiles[i];
+  t.mask = t.ans; t.anim = 1; t.hintT = 1.2; taps++;
+  sndTap(); afterChange();
+}
+
+// ---------- レイアウト ----------
+function board() {
+  const top = 74, bot = 70;
+  const size = Math.min(W - 28, H - top - bot, 640);
+  return { x: (W - size) / 2, y: top + (H - top - bot - size) / 2, size, cell: size / P.n };
+}
+
+// ---------- 入力 ----------
+let buttons = [];
+function evPos(e) { const r = cv.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
+function hitButton(p) { for (let i = buttons.length - 1; i >= 0; i--) { const b = buttons[i]; if (p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h) return b; } return null; }
+cv.addEventListener("pointerdown", e => {
+  audio();
+  const p = evPos(e), b = hitButton(p);
+  if (b) { b.act(); return; }
+  if (scene !== "play") return;
+  const B = board(), cx = Math.floor((p.x - B.x) / B.cell), cy = Math.floor((p.y - B.y) / B.cell);
+  if (cx >= 0 && cy >= 0 && cx < P.n && cy < P.n) rotateAt(cy * P.n + cx);
+});
+addEventListener("keydown", e => { if (e.key === "h") hint(); });
+
+// ---------- 降ってくる季節の飾り ----------
+const fallers = [];
+for (let i = 0; i < 26; i++) fallers.push({ x: Math.random(), y: Math.random(), s: rand(0.5, 1.2), v: rand(0.02, 0.05), ph: Math.random() * 6 });
+function drawFall(se, t) {
+  for (const f of fallers) {
+    const x = (f.x + Math.sin(t * 0.5 + f.ph) * 0.03) * W, y = f.y * H;
+    ctx.save(); ctx.translate(x, y); ctx.rotate(t * 0.6 + f.ph);
+    if (se.fall === "petal") { ctx.fillStyle = "rgba(247,168,196,0.7)"; ctx.beginPath(); ctx.ellipse(0, 0, 5 * f.s, 3 * f.s, 0, 0, Math.PI * 2); ctx.fill(); }
+    else if (se.fall === "leaf") { ctx.fillStyle = "rgba(226,110,50,0.65)"; ctx.beginPath(); ctx.ellipse(0, 0, 6 * f.s, 3.2 * f.s, 0, 0, Math.PI * 2); ctx.fill(); }
+    else if (se.fall === "snow") { ctx.fillStyle = "rgba(255,255,255,0.9)"; ctx.beginPath(); ctx.arc(0, 0, 2.6 * f.s, 0, Math.PI * 2); ctx.fill(); }
+    else { ctx.fillStyle = `rgba(255,240,150,${0.3 + 0.3 * Math.sin(t * 2 + f.ph)})`; ctx.beginPath(); ctx.arc(0, 0, 2.4 * f.s, 0, Math.PI * 2); ctx.fill(); }
+    ctx.restore();
+  }
+}
+function updateFall(dt) { for (const f of fallers) { f.y += f.v * dt * (season(level).fall === "light" ? -0.3 : 1); if (f.y > 1.05) { f.y = -0.05; f.x = Math.random(); } if (f.y < -0.05) { f.y = 1.05; f.x = Math.random(); } } }
+
+// ---------- 描画 ----------
+function txt(s, x, y, size, color, align = "center", weight = 700) {
+  ctx.font = `${weight} ${size}px ${FONT}`; ctx.fillStyle = color; ctx.textAlign = align; ctx.textBaseline = "middle";
+  ctx.fillText(s, x, y);
+}
+function rr(x, y, w, h, r) { ctx.beginPath(); ctx.roundRect ? ctx.roundRect(x, y, w, h, r) : ctx.rect(x, y, w, h); }
+function button(x, y, w, h, label, o, act) {
+  o = o || {};
+  rr(x, y, w, h, o.r ?? 14);
+  ctx.fillStyle = o.fill || "rgba(255,255,255,0.75)"; ctx.fill();
+  if (o.stroke) { ctx.strokeStyle = o.stroke; ctx.lineWidth = 1.5; ctx.stroke(); }
+  txt(label, x + w / 2, y + h / 2 + 1, o.size || 15, o.color || "#4a5a48", "center", 800);
+  buttons.push({ x, y, w, h, act });
+}
+
+// 水路（タイルの中心を原点に、マス幅 s で描く）
+function drawChannels(mask, s, se, wet, t) {
+  const w1 = s * 0.36, w2 = s * 0.24;
+  ctx.lineCap = "butt";
+  for (const [w, col] of [[w1, se.edge], [w2, wet ? se.water : se.dry]]) {
+    ctx.fillStyle = col;
+    for (let d = 0; d < 4; d++) {
+      if (!(mask & (1 << d))) continue;
+      ctx.save(); ctx.rotate(d * Math.PI / 2);
+      ctx.fillRect(-w / 2, -s / 2 - 1, w, s / 2 + 1);
+      ctx.restore();
+    }
+    if (mask) { ctx.beginPath(); ctx.arc(0, 0, w / 2, 0, Math.PI * 2); ctx.fill(); }
+  }
+  if (wet && mask) {   // 水のきらめき
+    ctx.fillStyle = "rgba(255,255,255,0.55)";
+    for (let d = 0; d < 4; d++) {
+      if (!(mask & (1 << d))) continue;
+      ctx.save(); ctx.rotate(d * Math.PI / 2);
+      const k = ((t * 0.9) % 1);
+      ctx.fillRect(-w2 * 0.12, -k * s / 2 - s * 0.04, w2 * 0.24, s * 0.08);
+      ctx.restore();
+    }
+  }
+}
+
+function drawTile(i, B, se, t) {
+  const T = P.tiles[i], n = P.n, x = i % n, y = i / n | 0, s = B.cell;
+  const cx = B.x + x * s + s / 2, cy = B.y + y * s + s / 2;
+  const wet = state.wet[i];
+  // 草地
+  ctx.fillStyle = (x + y) % 2 ? se.grass : se.grass2;
+  ctx.fillRect(B.x + x * s, B.y + y * s, s + 0.5, s + 0.5);
+  if (T.kind === "grass") {   // 草花の飾り
+    const r = mulberry(T.deco);
+    for (let k = 0; k < 3; k++) {
+      const px = cx + (r() - 0.5) * s * 0.7, py = cy + (r() - 0.5) * s * 0.7;
+      ctx.fillStyle = r() < 0.5 ? se.deco : "rgba(255,255,255,0.7)";
+      ctx.beginPath(); ctx.arc(px, py, s * 0.04, 0, Math.PI * 2); ctx.fill();
+    }
+    return;
+  }
+  ctx.save(); ctx.translate(cx, cy);
+  if (T.anim > 0) ctx.rotate(-T.anim * Math.PI / 2);
+  drawChannels(T.mask, s, se, wet, t);
+  ctx.restore();
+  if (T.kind === "source") {
+    ctx.beginPath(); ctx.arc(cx, cy, s * 0.3, 0, Math.PI * 2); ctx.fillStyle = "#b9b2a4"; ctx.fill();
+    ctx.beginPath(); ctx.arc(cx, cy, s * 0.22, 0, Math.PI * 2); ctx.fillStyle = se.water; ctx.fill();
+    for (let k = 0; k < 3; k++) { const ph = (t * 1.2 + k / 3) % 1; ctx.beginPath(); ctx.arc(cx, cy, s * 0.22 * ph, 0, Math.PI * 2); ctx.strokeStyle = `rgba(255,255,255,${0.6 * (1 - ph)})`; ctx.lineWidth = 1.5; ctx.stroke(); }
+  } else if (T.kind === "pond") {
+    const pi = P.ponds.indexOf(i), b = P.bloom[pi];
+    ctx.beginPath(); ctx.ellipse(cx, cy, s * 0.36, s * 0.3, 0, 0, Math.PI * 2); ctx.fillStyle = se.edge; ctx.fill();
+    ctx.beginPath(); ctx.ellipse(cx, cy, s * 0.3, s * 0.24, 0, 0, Math.PI * 2); ctx.fillStyle = wet ? se.water : se.dry; ctx.fill();
+    if (b > 0) {   // 花が咲く
+      ctx.fillStyle = "#5fa35a"; ctx.beginPath(); ctx.ellipse(cx - s * 0.1, cy + s * 0.04, s * 0.11 * b, s * 0.07 * b, 0.3, 0, Math.PI * 2); ctx.fill();
+      for (let k = 0; k < 6; k++) { const a = k / 6 * Math.PI * 2 + t * 0.2; ctx.fillStyle = "#f6a5c0"; ctx.beginPath(); ctx.ellipse(cx + s * 0.06 + Math.cos(a) * s * 0.07 * b, cy - s * 0.04 + Math.sin(a) * s * 0.07 * b, s * 0.05 * b, s * 0.03 * b, a, 0, Math.PI * 2); ctx.fill(); }
+      ctx.fillStyle = "#ffe27a"; ctx.beginPath(); ctx.arc(cx + s * 0.06, cy - s * 0.04, s * 0.03 * b, 0, Math.PI * 2); ctx.fill();
+    } else {   // 芽
+      ctx.strokeStyle = "#6a9a4a"; ctx.lineWidth = Math.max(1.5, s * 0.025);
+      ctx.beginPath(); ctx.moveTo(cx, cy + s * 0.08); ctx.lineTo(cx, cy - s * 0.04); ctx.stroke();
+      ctx.fillStyle = "#7fb35a"; ctx.beginPath(); ctx.ellipse(cx - s * 0.04, cy - s * 0.05, s * 0.04, s * 0.02, -0.5, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.ellipse(cx + s * 0.04, cy - s * 0.06, s * 0.04, s * 0.02, 0.5, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+  if (T.hintT > 0) { ctx.strokeStyle = `rgba(255,220,90,${T.hintT})`; ctx.lineWidth = 4; ctx.strokeRect(B.x + x * s + 3, B.y + y * s + 3, s - 6, s - 6); }
+}
+
+function drawBg(se, t) {
+  const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, se.bg[0]); g.addColorStop(1, se.bg[1]);
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  drawFall(se, t);
+}
+
+function drawPlay(t) {
+  const se = season(level);
+  drawBg(se, t);
+  buttons = [];
+  const B = board();
+  // 盤の影と枠
+  rr(B.x - 8, B.y - 8, B.size + 16, B.size + 16, 18); ctx.fillStyle = "rgba(90,110,80,0.18)"; ctx.fill();
+  ctx.save(); rr(B.x, B.y, B.size, B.size, 12); ctx.clip();
+  for (let i = 0; i < P.tiles.length; i++) drawTile(i, B, se, t);
+  ctx.restore();
+  // 上のバー
+  const narrow = W < 520;
+  txt(`第${level}面`, 18, 28, narrow ? 20 : 24, "#4a5a48", "left", 900);
+  txt(`${se.name}　${P.n}×${P.n}　池 ${P.ponds.length}　タップ ${taps}`, 18, 54, narrow ? 12 : 13, "#6a7a68", "left", 700);
+  button(W - 52, 14, 40, 40, "≡", { size: 18 }, () => { scene = "title"; });
+  button(W - 52 - 48, 14, 40, 40, bgmOn ? "♪" : "－", { size: 18 }, () => { bgmOn = !bgmOn; try { localStorage.setItem("kusoge013-bgm", bgmOn ? "1" : "0"); } catch (e) { } });
+  // 下
+  const by = H - 58;
+  button(W / 2 - 70, by, 140, 44, "ヒント", { fill: "rgba(255,255,255,0.8)", size: 16 }, hint);
+  if (scene === "clear") drawClear(t);
+}
+
+function drawClear(t) {
+  // 花が咲くのを見せてから、画面の下に出す
+  const k = clamp((clearT - 0.9) / 0.5, 0, 1);
+  if (k <= 0) return;
+  buttons = [];
+  const pw = Math.min(340, W - 40), ph = 190, x = W / 2 - pw / 2, y = H - ph - 16 + (1 - k) * 30;
+  ctx.save(); ctx.globalAlpha = k;
+  ctx.shadowColor = "rgba(60,90,60,0.25)"; ctx.shadowBlur = 18;
+  rr(x, y, pw, ph, 22); ctx.fillStyle = "rgba(255,255,255,0.95)"; ctx.fill(); ctx.shadowBlur = 0;
+  txt("クリア", W / 2, y + 36, 28, "#5a8a5a", "center", 900);
+  txt(`第${level}面　タップ ${taps}回`, W / 2, y + 70, 14, "#6a7a68", "center", 700);
+  txt("+5 メダル", W / 2, y + 94, 13, "#d0962a", "center", 800);
+  ctx.restore();
+  if (k >= 1) {
+    button(x + 20, y + ph - 66, pw - 40, 50, level % 10 === 0 ? `次の季節へ（第${level + 1}面）` : "次の面へ", { fill: "#7fb97a", color: "#fff", size: 17 }, () => startLevel(level + 1));
+  }
+}
+
+function drawTitle(t) {
+  const se = season(saved);
+  drawBg(se, t);
+  buttons = [];
+  const cx = W / 2, small = W < 520;
+  let y = Math.max(30, (H - 600) / 2);
+  // 飾り：小さな水路
+  const s = small ? 46 : 54;
+  const demo = [6, 10, 12];
+  ctx.save(); ctx.translate(cx - s * 1.5, y);
+  demo.forEach((m, i) => { ctx.fillStyle = i % 2 ? se.grass : se.grass2; ctx.fillRect(i * s, 0, s, s); ctx.save(); ctx.translate(i * s + s / 2, s / 2); drawChannels(m, s, se, true, t); ctx.restore(); });
+  ctx.restore();
+  y += s + 50;
+  txt("みずみち", cx, y, small ? 38 : 48, "#4a6a48", "center", 900); y += 34;
+  txt("タイルを回して、池まで水をとどけよう", cx, y, small ? 13 : 15, "#6a7a68", "center", 700); y += 26;
+  const bw = Math.min(340, W - 32), x0 = cx - bw / 2;
+  const rules = [
+    "・タイルをタップすると、90度まわる",
+    "・源泉から水路をつないで、",
+    "　すべての池に水を届けたらクリア",
+    "・時間も手数も気にせず、のんびりどうぞ",
+    "・こまったら「ヒント」で1マス直せる",
+    "・10面ごとに季節がかわる",
+  ];
+  const lh = small ? 21 : 22, rh = rules.length * lh + 22;
+  rr(x0, y, bw, rh, 14); ctx.fillStyle = "rgba(255,255,255,0.7)"; ctx.fill();
+  rules.forEach((r, i) => txt(r, x0 + 14, y + 11 + lh / 2 + i * lh, small ? 12 : 13, "#4a5a48", "left", 700));
+  y += rh + 22;
+  if (saved > 1) {
+    button(x0, y, bw, 54, `続きから（第${saved}面）`, { fill: "#7fb97a", color: "#fff", size: 18 }, () => startLevel(saved)); y += 64;
+    button(x0, y, bw, 44, "最初から", { fill: "rgba(255,255,255,0.75)", size: 15 }, () => { if (confirm("第1面からやり直しますか？")) startLevel(1); }); y += 56;
+  } else { button(x0, y, bw, 54, "はじめる", { fill: "#7fb97a", color: "#fff", size: 18 }, () => startLevel(1)); y += 66; }
+  button(cx - 70, y, 140, 36, "← 置き場へ", { fill: "transparent", color: "#6a7a68", size: 14 }, () => { location.href = "../../"; });
+}
+
+// ---------- ループ ----------
+let lastT = performance.now();
+function frame(now) {
+  requestAnimationFrame(frame);
+  const dt = Math.min(0.05, (now - lastT) / 1000); lastT = now;
+  const t = now / 1000;
+  updateFall(dt); bgmTick(dt);
+  if (P) {
+    for (const T of P.tiles) { if (T.anim > 0) T.anim = Math.max(0, T.anim - dt * 7); if (T.hintT > 0) T.hintT -= dt; }
+    P.ponds.forEach((p, i) => { const target = state.wet[p] ? 1 : 0, before = P.bloom[i]; P.bloom[i] = clamp(P.bloom[i] + (target ? dt * 2 : -dt * 4), 0, 1); if (before === 0 && P.bloom[i] > 0) sndPond(); });
+  }
+  if (scene === "clear") clearT += dt;
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  if (scene === "title") drawTitle(t);
+  else drawPlay(t);
+}
+resize();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
