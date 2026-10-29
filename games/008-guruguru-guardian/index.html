@@ -37,6 +37,9 @@
   #title h1{font-size:clamp(32px,9vw,60px);margin:0;font-weight:900;line-height:1.1;text-shadow:0 4px 0 #050a10}
   #title h1 span{color:var(--gold)}
   #title p{color:var(--sub);margin:12px 0 30px;font-size:15px}
+  #title ul.rules{list-style:none;padding:0;margin:-14px auto 26px;max-width:min(440px,100%);text-align:left;font-size:13.5px;line-height:1.75;color:var(--sub)}
+  #title ul.rules li{padding-left:1em;text-indent:-1em}
+  #title ul.rules li::before{content:"・"}
   /* ステージ選択 */
   #select{background:var(--bg);align-items:center;overflow-y:auto;touch-action:pan-y}
   .wrap{max-width:560px;width:100%;display:flex;flex-direction:column;gap:12px}
@@ -117,6 +120,11 @@
   <div class="spin"><div class="trail"></div><div class="arm"></div><div class="hero"></div></div>
   <h1>ぐるぐる<br><span>ガーディアン</span></h1>
   <p>冒険者を雇い、合成して、峠道を守りぬけ</p>
+  <ul class="rules">
+    <li><b>召喚</b>で道のそばに冒険者が出て、武器を回して敵を攻撃する</li>
+    <li>同じ冒険者を<b>ドラッグして重ねる</b>と合成して強くなる</li>
+    <li>道の敵が上限に達したら負け。30ウェーブ守ればクリア</li>
+  </ul>
   <button class="big" id="startBtn">あそぶ</button>
 </section>
 

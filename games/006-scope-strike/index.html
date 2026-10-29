@@ -21,6 +21,9 @@
   #title h1{font-size:clamp(34px,9vw,64px);margin:0;letter-spacing:.04em;font-weight:900}
   #title h1 span{color:var(--accent)}
   #title p{color:var(--sub);margin:10px 0 28px;font-size:15px}
+  #title ul.rules{list-style:none;padding:0;margin:-14px auto 26px;max-width:min(440px,100%);text-align:left;font-size:13.5px;line-height:1.75;color:var(--sub)}
+  #title ul.rules li{padding-left:1em;text-indent:-1em}
+  #title ul.rules li::before{content:"・"}
   .big{background:var(--accent);color:#1a0d02;font-weight:900;font-size:18px;padding:14px 44px;border-radius:999px;
     box-shadow:0 6px 0 #a8501a}
   .big:active{transform:translateY(3px);box-shadow:0 3px 0 #a8501a}
@@ -100,6 +103,12 @@
 <div id="title" class="screen on">
   <h1>スコープ・<span>ストライク</span></h1>
   <p>街に侵入したロボットとドローンを、遠くから撃ち抜け。</p>
+  <ul class="rules">
+    <li>ドラッグで街を見回す</li>
+    <li>敵を<b>長押し</b>でスコープ、<b>指を離すと発射</b>（PCはクリックしたまま狙って離す）</li>
+    <li>時間内に目標の数を倒せばクリア。時間切れ・弾切れ・逃げられると失敗</li>
+    <li>報酬のコインで銃を強化し、弾薬を買って次のステージへ</li>
+  </ul>
   <button class="big" id="btnStart">出撃準備</button>
 </div>
 

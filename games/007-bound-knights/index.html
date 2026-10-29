@@ -34,6 +34,9 @@
     text-shadow:0 4px 0 #0a0b1a}
   #title h1 span{color:var(--gold)}
   #title p{color:var(--sub);margin:12px 0 30px;font-size:15px}
+  #title ul.rules{list-style:none;padding:0;margin:-14px auto 26px;max-width:min(440px,100%);text-align:left;font-size:13.5px;line-height:1.75;color:var(--sub)}
+  #title ul.rules li{padding-left:1em;text-indent:-1em}
+  #title ul.rules li::before{content:"・"}
   .big{background:var(--gold);color:#2a1a00;font-weight:900;font-size:18px;padding:14px 48px;border-radius:999px;
     box-shadow:0 6px 0 #b8861a}
   .big:active{transform:translateY(3px);box-shadow:0 3px 0 #b8861a}
@@ -83,6 +86,11 @@
   <div class="orbs"><div class="orb"></div><div class="orb"></div><div class="orb"></div><div class="orb"></div></div>
   <h1>バウンド<span>・</span>ナイツ</h1>
   <p>引っ張って、はじいて、ぶつけて倒す</p>
+  <ul class="rules">
+    <li>画面を<b>引っ張って離す</b>と、手番のキャラが反対方向に飛ぶ</li>
+    <li>壁や敵にはね返りながらぶつけて、敵のHPを0にする</li>
+    <li>1クエストは3バトル。最後のボスを倒せばクリア、味方のHPが0で負け</li>
+  </ul>
   <button class="big" id="startBtn">あそぶ</button>
 </section>
 
