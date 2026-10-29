@@ -9,6 +9,8 @@
 (function () {
   "use strict";
   const FB = "https://www.gstatic.com/firebasejs/12.19.0/";
+  // 1000メダルでの解放（オフの間は全ゲームを最初から遊べる。解放の記録は消さずに残す）
+  const LOCK_ON = false;
   const FREE_UP_TO = 6;
   const UNLOCK_COST = 1000;
   const FLUSH_MS = 5000;
@@ -107,7 +109,7 @@
 
   // ---------- 公開する機能 ----------
   const Medal = {
-    FREE_UP_TO, UNLOCK_COST,
+    FREE_UP_TO, UNLOCK_COST, LOCK_ON,
     get state() { return state; },
     ready: () => readyP,
     onChange(cb) { listeners.push(cb); if (state.ready) cb(state); },
@@ -121,9 +123,9 @@
       emit(); schedule();
     },
 
-    isFree: no => noNum(no) <= FREE_UP_TO,
+    isFree: no => !LOCK_ON || noNum(no) <= FREE_UP_TO,
     isUnlocked(no) {
-      if (state.enabled === false || noNum(no) <= FREE_UP_TO) return true;
+      if (state.enabled === false || Medal.isFree(no)) return true;
       return state.unlocked.includes(String(no).padStart(3, "0"));
     },
 
@@ -147,7 +149,7 @@
 
     // 007 以降のゲームのページで呼ぶ。未解放ならトップへ戻す
     requireUnlock(no) {
-      if (noNum(no) <= FREE_UP_TO) return;
+      if (Medal.isFree(no)) return;
       const cover = document.createElement("div");
       cover.style.cssText = "position:fixed;inset:0;z-index:2147483001;background:#16161c;color:#bbb;display:flex;align-items:center;justify-content:center;font:700 15px system-ui,sans-serif";
       cover.textContent = "読み込み中…";

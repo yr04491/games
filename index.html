@@ -176,6 +176,7 @@
   function render(st) {
     if (!st.enabled) return;
     $("medalbar").classList.add("on"); $("mhelp").classList.add("on");
+    if (!Medal.LOCK_ON) $("mhelp").textContent = "ゲームで遊ぶとメダルが貯まります。";
     $("mval").textContent = Math.max(0, st.medals).toLocaleString();
     $("acct").textContent = st.guest ? "ゲストで保存中" : st.name + " でログイン中";
     $("acctBtn").textContent = st.guest ? "Googleでつなぐ" : "ログアウト";

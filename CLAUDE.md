@@ -13,6 +13,7 @@
 - 基準は「普通に遊んで1分あたり約10枚」。ゲームごとに、どの場面で何枚もらえるかを決める。上限やボーナスは付けない
 - ゲーム内の専用コインとは別物。専用コインはそのまま残す
 - No.001〜006 は最初から遊べる。007 以降は 1000 メダルで解放し、ゲームのページで `Medal.requireUnlock("番号")` を呼ぶ
+- 解放のしくみは `shared/medal.js` の `LOCK_ON` で切り替える。今は `false`（オフ：全ゲームを最初から遊べる）。新しいゲームにも `requireUnlock` は入れておく
 - Firebase の設定値は `shared/firebase-config.js`。空のときはメダル機能ごとオフになり、全ゲームが遊べる
 - ローカル確認は Firebase エミュレーター（`firebase emulators:start --project demo-games`）を起動し、URL に `?emu` を付ける
 
