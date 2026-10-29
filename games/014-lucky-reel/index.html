@@ -1,0 +1,537 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>ラッキーリール</title>
+<style>
+  html,body{margin:0;height:100%;background:#1a0f24;overflow:hidden;touch-action:none;
+    font-family:system-ui,-apple-system,"Hiragino Sans","Noto Sans CJK JP","Noto Sans JP",sans-serif;
+    -webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
+  canvas{display:block;width:100vw;height:100vh}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script src="../../shared/medal.js"></script>
+<script>Medal.requireUnlock("014");</script>
+<script>
+"use strict";
+// ============================================================
+//  ラッキーリール — ストップボタン式の3リールスロット
+//  ・日本のパチスロと同じしくみ：21コマ、すべり最大4コマ、3枚掛けで5ライン
+//  ・小役は内部抽選。ベル・リプレイは自動でそろい、チェリー・スイカは取りこぼしあり
+//  ・ボーナスはランプで告知（持ち越しあり）。7かBARを目押し。払い出し枚数で終了
+//  ・台ごとに設定1〜6。本物の速さ（約80回転/分）とゆっくりモード
+//  ・賭けるのはゲーム内コイン（無料で補充できる）。共通メダルは回した回数とボーナスでもらえる
+//  ・画像ファイルなし：すべてコードで描画
+// ============================================================
+const cv = document.getElementById("c");
+const ctx = cv.getContext("2d");
+const FONT = 'system-ui,-apple-system,"Hiragino Sans","Noto Sans CJK JP","Noto Sans JP",sans-serif';
+
+let W = 0, H = 0, DPR = 1;
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = innerWidth; H = innerHeight;
+  cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
+}
+addEventListener("resize", resize);
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+
+// ---------- 絵柄とリール ----------
+const SEVEN = 0, BAR = 1, BELL = 2, CHERRY = 3, MELON = 4, REPLAY = 5;
+const NAMES = ["7", "BAR", "ベル", "チェリー", "スイカ", "リプレイ"];
+// 21コマ。ベルとリプレイは5コマ以内に必ず出てくる（どこで押しても、すべりでどれかのラインにそろえられる）
+// チェリー・スイカはまばらなので、ねらわないと取りこぼすことがある
+const S_ = SEVEN, A_ = BAR, B_ = BELL, C_ = CHERRY, M_ = MELON, R_ = REPLAY;
+const STRIPS = [
+  [B_, R_, S_, M_, B_, R_, C_, A_, B_, R_, M_, S_, B_, R_, C_, M_, B_, R_, A_, M_, S_],
+  [R_, B_, M_, S_, R_, B_, A_, C_, R_, B_, M_, S_, R_, B_, M_, A_, R_, B_, C_, S_, M_],
+  [B_, S_, R_, M_, B_, C_, R_, A_, B_, M_, R_, S_, B_, M_, R_, C_, B_, A_, R_, M_, S_],
+];
+const N = 21, SLIDE = 4, BET = 3;
+const mod = i => ((i % N) + N) % N;
+// 窓の3段：上=-1、中=0、下=1（上の段には、これから下りてくる次のコマが見える）
+const symAt = (ri, stop, row) => STRIPS[ri][mod(stop - row)];
+// 有効ライン（3枚賭けで5ライン）：各リールの段
+const LINES = [[0, 0, 0], [-1, -1, -1], [1, 1, 1], [-1, 0, 1], [1, 0, -1]];
+const LINE_NAMES = ["中段", "上段", "下段", "右下がり", "右上がり"];
+const PAY = { [BELL]: 8, [MELON]: 15, [CHERRY]: 2 };   // チェリーはラインごと（角に止まると2ライン分）
+const BONUS_BELL = 15;
+const BONUS_LIMIT = { big: 252, reg: 96 };              // この枚数を払い出したら終了
+// 設定1〜6のボーナス確率
+const BIG_P = [1 / 287, 1 / 280, 1 / 270, 1 / 255, 1 / 245, 1 / 235];
+const REG_P = [1 / 450, 1 / 400, 1 / 350, 1 / 310, 1 / 280, 1 / 255];
+const SMALL_P = { replay: 1 / 7.3, bell: 1 / 6.8, melon: 1 / 48, cherry: 1 / 36 };
+const SPEEDS = { real: 28, slow: 13 };   // 1秒に進むコマ数（本物は1分に約80回転）
+const ROLE_SYM = { bell: BELL, replay: REPLAY, melon: MELON, cherry: CHERRY };
+
+// 止まった形を判定：ラインごとの当たり
+function evaluate(stops) {
+  const wins = [];
+  LINES.forEach((L, li) => {
+    const a = symAt(0, stops[0], L[0]), b = symAt(1, stops[1], L[1]), c = symAt(2, stops[2], L[2]);
+    if (a === CHERRY) wins.push({ li, kind: CHERRY });
+    else if (a === b && b === c && a !== CHERRY) wins.push({ li, kind: a });
+  });
+  return wins;
+}
+
+// ---------- リール制御（すべり最大4コマ） ----------
+// flag：この回の小役、pending：持ち越し中のボーナス
+function allowedKinds() {
+  const ok = new Set();
+  if (flag) ok.add(ROLE_SYM[flag]);
+  if (S.pending === "big") ok.add(SEVEN);
+  if (S.pending === "reg") ok.add(BAR);
+  return ok;
+}
+function targetSym() {
+  if (flag) return ROLE_SYM[flag];
+  if (S.pending) return S.pending === "big" ? SEVEN : BAR;
+  return null;
+}
+function chooseStop(ri) {
+  const press = Math.floor(reels[ri].pos) % N;
+  const known = reels.map((r, i) => i === ri ? null : r.stopAt);
+  const target = targetSym(), ok = allowedKinds();
+  let best = null;
+  for (let s = 0; s <= SLIDE; s++) {
+    const stop = mod(press + s);
+    const st = known.slice(); st[ri] = stop;
+    // そろってはいけない役がそろわないか
+    let bad = false;
+    if (st[0] !== null && !ok.has(CHERRY) && [-1, 0, 1].some(row => symAt(0, st[0], row) === CHERRY)) bad = true;
+    if (!bad && st.every(x => x !== null)) bad = evaluate(st).some(w => !ok.has(w.kind));
+    if (!bad && st.filter(x => x !== null).length === 2 && target === null) {
+      // 2つ止まった時点で、残りのリールがどこに止まっても避けられない形は避ける
+      const rest = st.indexOf(null);
+      let anyFree = false;
+      for (let p = 0; p < N && !anyFree; p++) { const t = st.slice(); t[rest] = p; if (!evaluate(t).some(w => !ok.has(w.kind))) anyFree = true; }
+      if (!anyFree) bad = true;
+    }
+    // ねらう役が、残りのリールをどこで押されてもそろえられる見込み（0〜1）
+    let score = 0, lines = 0;
+    if (target !== null && !bad) {
+      score = futureRate(st, target, ok);
+      for (const L of LINES) if (st.every((x, i) => x === null || symAt(i, x, L[i]) === target)) lines++;
+    }
+    const cand = { stop, s, bad, score, lines };
+    if (!best || (best.bad && !cand.bad) || (best.bad === cand.bad && (cand.score > best.score + 1e-9 || (Math.abs(cand.score - best.score) <= 1e-9 && cand.lines > best.lines)))) best = cand;
+  }
+  return best.stop;
+}
+// 全部止まった形が、許されていない役をそろえていないか
+function validFull(st, ok) {
+  if (!ok.has(CHERRY) && [-1, 0, 1].some(row => symAt(0, st[0], row) === CHERRY)) return false;
+  return !evaluate(st).some(w => !ok.has(w.kind));
+}
+const completes = (st, target) => evaluate(st).some(w => w.kind === target);
+const rateCache = new Map();
+function futureRate(st, target, ok) {
+  const key = st.join(",") + "|" + target + "|" + [...ok].sort().join(",");
+  if (rateCache.has(key)) return rateCache.get(key);
+  const unk = [0, 1, 2].filter(i => st[i] === null);
+  let good = 0, tot = 0;
+  if (!unk.length) { good = completes(st, target) && validFull(st, ok) ? 1 : 0; tot = 1; }
+  else if (unk.length === 1) {
+    const j = unk[0];
+    for (let p = 0; p < N; p++) { tot++; for (let s = 0; s <= SLIDE; s++) { const t = st.slice(); t[j] = mod(p + s); if (completes(t, target) && validFull(t, ok)) { good++; break; } } }
+  } else {
+    const [j, k] = unk;
+    for (let p = 0; p < N; p++) for (let q = 0; q < N; q++) {
+      tot++;
+      let found = false;
+      for (let s = 0; s <= SLIDE && !found; s++) for (let u = 0; u <= SLIDE && !found; u++) {
+        const t = st.slice(); t[j] = mod(p + s); t[k] = mod(q + u);
+        if (completes(t, target) && validFull(t, ok)) found = true;
+      }
+      if (found) good++;
+    }
+  }
+  const r = good / tot;
+  rateCache.set(key, r);
+  return r;
+}
+
+// ---------- 音 ----------
+let AC = null, mute = false;
+function audio() {
+  if (!AC) { try { AC = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { AC = null; } }
+  if (AC && AC.state === "suspended") AC.resume();
+}
+function tone(freq, dur, type, vol, slide, delay = 0) {
+  if (!AC || mute) return;
+  const t = AC.currentTime + delay, o = AC.createOscillator(), g = AC.createGain();
+  o.type = type; o.frequency.setValueAtTime(freq, t);
+  if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(40, freq + slide), t + dur);
+  g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(vol, t + 0.005); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g).connect(AC.destination); o.start(t); o.stop(t + dur + 0.02);
+}
+const sndLever = () => tone(180, 0.12, "square", 0.06, -60);
+const sndStop = () => tone(900, 0.05, "square", 0.05);
+const sndWin = () => [880, 1175].forEach((f, i) => tone(f, 0.12, "square", 0.05, 0, i * 0.08));
+const sndReplay = () => tone(660, 0.15, "triangle", 0.05);
+const sndLamp = () => [1047, 1319, 1568, 2093].forEach((f, i) => tone(f, 0.18, "square", 0.05, 0, i * 0.07));
+const sndReach = () => [523, 523, 659].forEach((f, i) => tone(f, 0.15, "sawtooth", 0.04, 0, i * 0.12));
+const sndBonus = () => [523, 659, 784, 1047, 784, 1047, 1319].forEach((f, i) => tone(f, 0.2, "square", 0.05, 0, i * 0.11));
+const sndPayout = () => tone(1200 + Math.random() * 300, 0.04, "square", 0.03);
+
+// ---------- 状態 ----------
+const SAVE = "kusoge014-save";
+let S = { v: 2, coins: 100, spins: 0, big: 0, reg: 0, best: 100, pending: null, bonus: null, bonusPaid: 0, setting: 1, session: { spins: 0, big: 0, reg: 0 }, speed: "real", lastReveal: null };
+try { const s = JSON.parse(localStorage.getItem(SAVE) || "null"); if (s && s.v === 2) S = Object.assign(S, s); else if (s && typeof s.coins === "number") S.coins = s.coins; } catch (e) { }
+function save() { try { localStorage.setItem(SAVE, JSON.stringify(S)); } catch (e) { } }
+
+let scene = "title";       // title / play
+let phase = "idle";        // idle / spin / payout
+const reels = [0, 1, 2].map(() => ({ pos: Math.floor(Math.random() * N), spinning: false, stopAt: null, settle: 0 }));
+let flag = null, freeSpin = false, lastPay = 0, payQueue = 0, payT = 0, msg = null, reachT = 0, flashT = 0, lampAnnounce = 0, winLines = [];
+function say(text, color = "#fff", t = 1.4) { msg = { text, color, t, max: t }; }
+function medal(n) { if (n > 0 && window.Medal) Medal.add(n); }
+
+// 台を選ぶ（設定1〜6をランダムに決める）
+function newMachine() {
+  S.setting = 1 + Math.floor(Math.random() * 6);
+  S.session = { spins: 0, big: 0, reg: 0 };
+  S.pending = null; S.bonus = null; S.bonusPaid = 0;
+  save();
+}
+function leaveMachine() {
+  if (S.session.spins > 0) S.lastReveal = { setting: S.setting, ...S.session };
+  newMachine();
+  scene = "title";
+}
+
+// ---------- 1回分 ----------
+function lever() {
+  if (scene !== "play" || phase !== "idle") return;
+  audio();
+  if (!freeSpin) {
+    if (S.coins < BET) { say("コインが足りません。「補充」で増やせます", "#ffb3b3", 2); return; }
+    S.coins -= BET;
+  }
+  freeSpin = false; lastPay = 0; winLines = [];
+  S.spins++; S.session.spins++;
+  if (S.spins % 10 === 0) medal(2);   // 共通メダル：10回まわすごとに2枚
+  flag = null;
+  if (S.bonus) flag = "bell";
+  else {
+    const r = Math.random();
+    let acc = 0;
+    for (const k of ["replay", "bell", "melon", "cherry"]) { acc += SMALL_P[k]; if (r < acc) { flag = k; break; } }
+    if (!S.pending) {
+      const b = Math.random(), st = S.setting - 1;
+      if (b < BIG_P[st]) S.pending = "big"; else if (b < BIG_P[st] + REG_P[st]) S.pending = "reg";
+      if (S.pending) { lampAnnounce = Math.random() < 0.5 ? 1 : 2; if (lampAnnounce === 1) sndLamp(); }
+    }
+  }
+  for (const r of reels) { r.spinning = true; r.stopAt = null; r.settle = 0; }
+  phase = "spin";
+  sndLever();
+  save();
+}
+
+function stopReel(ri) {
+  const r = reels[ri];
+  if (scene !== "play" || phase !== "spin" || !r.spinning || r.settle > 0) return;
+  r.stopAt = chooseStop(ri);
+  r.settle = 1;
+  sndStop();
+}
+
+function afterAllStopped() {
+  const stops = reels.map(r => r.stopAt);
+  const wins = evaluate(stops);
+  winLines = wins.map(w => w.li);
+  let pay = 0;
+  const has = k => wins.some(w => w.kind === k);
+  if (has(SEVEN) && S.pending === "big") { startBonus("big"); return finishSpin(0); }
+  if (has(BAR) && S.pending === "reg") { startBonus("reg"); return finishSpin(0); }
+  for (const w of wins) {
+    if (w.kind === BELL) pay += S.bonus ? BONUS_BELL : PAY[BELL];
+    else if (w.kind === MELON) pay += PAY[MELON];
+    else if (w.kind === CHERRY) pay += PAY[CHERRY];
+  }
+  if (has(REPLAY)) { freeSpin = true; sndReplay(); say("リプレイ", "#9fd0ff", 0.9); }
+  if (S.pending && lampAnnounce === 2) { lampAnnounce = 1; sndLamp(); }
+  if (S.bonus) {
+    S.bonusPaid += pay;
+    if (S.bonusPaid >= BONUS_LIMIT[S.bonus]) { say(`${S.bonus === "big" ? "BIG" : "REG"} 終了（${S.bonusPaid}枚）`, "#ffe27a", 1.8); S.bonus = null; }
+  }
+  finishSpin(pay);
+}
+function finishSpin(pay) {
+  lastPay = pay; payQueue = pay; payT = 0;
+  if (pay > 0) { sndWin(); flashT = 0.8; }
+  phase = pay > 0 ? "payout" : "idle";
+  S.best = Math.max(S.best, S.coins + pay);
+  save();
+}
+function startBonus(kind) {
+  S.bonus = kind; S.bonusPaid = 0; S.pending = null; lampAnnounce = 0;
+  if (kind === "big") { S.big++; S.session.big++; medal(15); } else { S.reg++; S.session.reg++; medal(8); }   // 共通メダル：BIG 15枚、REG 8枚
+  sndBonus(); flashT = 2;
+  say(kind === "big" ? "BIG BONUS！" : "REGULAR BONUS！", "#ffe27a", 2.4);
+}
+function refill() {
+  if (S.coins >= 50 || phase !== "idle") return;
+  S.coins = 50; save(); say("コインを50枚に補充しました", "#bfe8ff", 1.6);
+}
+
+// ---------- 入力 ----------
+let buttons = [];
+function evPos(e) { const r = cv.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
+function hitButton(p) { for (let i = buttons.length - 1; i >= 0; i--) { const b = buttons[i]; if (p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h) return b; } return null; }
+cv.addEventListener("pointerdown", e => { audio(); const b = hitButton(evPos(e)); if (b) b.act(); });
+addEventListener("keydown", e => {
+  if (e.repeat) return;
+  const k = e.key.toLowerCase();
+  if (k === " " || k === "enter") { e.preventDefault(); if (scene === "play") lever(); }
+  if (k === "z" || k === "1" || k === "arrowleft") stopReel(0);
+  if (k === "x" || k === "2" || k === "arrowdown") stopReel(1);
+  if (k === "c" || k === "3" || k === "arrowright") stopReel(2);
+  if (k === "m") mute = !mute;
+});
+
+// ---------- 更新 ----------
+function update(dt) {
+  if (msg) { msg.t -= dt; if (msg.t <= 0) msg = null; }
+  if (flashT > 0) flashT -= dt;
+  if (reachT > 0) reachT -= dt;
+  const speed = SPEEDS[S.speed] || SPEEDS.real;
+  if (phase === "spin") {
+    let allStopped = true;
+    for (let i = 0; i < 3; i++) {
+      const r = reels[i];
+      if (!r.spinning) continue;
+      if (r.settle > 0) {
+        const cur = r.pos % N;
+        const d = (r.stopAt - cur + N) % N;
+        const step = Math.min(d, speed * 1.6 * dt + 0.02);
+        r.pos = (r.pos + step) % N;
+        if (d - step < 0.001) { r.pos = r.stopAt; r.spinning = false; checkReach(); }
+      } else r.pos = (r.pos + speed * dt) % N;
+      if (r.spinning) allStopped = false;
+    }
+    if (allStopped) afterAllStopped();
+  } else if (phase === "payout") {
+    payT += dt;
+    while (payQueue > 0 && payT > 0.04) { payT -= 0.04; payQueue--; S.coins++; sndPayout(); }
+    if (payQueue <= 0) { phase = "idle"; save(); }
+  }
+}
+// 2つ止まった時点で、7かBARがどこかのラインにテンパイしていたらリーチ
+function checkReach() {
+  const st = reels.map(r => r.spinning ? null : r.stopAt);
+  if (st.filter(x => x !== null).length !== 2) return;
+  const rest = st.indexOf(null);
+  for (const sym of [SEVEN, BAR]) for (const L of LINES)
+    if (st.every((x, i) => i === rest || symAt(i, x, L[i]) === sym)) { reachT = 1.6; sndReach(); say("リーチ！", "#ff7a9a", 1.2); return; }
+}
+
+// ---------- 描画 ----------
+function txt(s, x, y, size, color, align = "center", weight = 700) {
+  ctx.font = `${weight} ${size}px ${FONT}`; ctx.fillStyle = color; ctx.textAlign = align; ctx.textBaseline = "middle";
+  ctx.fillText(s, x, y);
+}
+function rr(x, y, w, h, r) { ctx.beginPath(); ctx.roundRect ? ctx.roundRect(x, y, w, h, r) : ctx.rect(x, y, w, h); }
+function button(x, y, w, h, label, o, act) {
+  o = o || {};
+  rr(x, y, w, h, o.r ?? 14);
+  if (o.grad) { const g = ctx.createLinearGradient(0, y, 0, y + h); g.addColorStop(0, o.grad[0]); g.addColorStop(1, o.grad[1]); ctx.fillStyle = g; } else ctx.fillStyle = o.fill || "rgba(255,255,255,0.1)";
+  ctx.fill();
+  if (o.stroke) { ctx.strokeStyle = o.stroke; ctx.lineWidth = o.lw || 2; ctx.stroke(); }
+  txt(label, x + w / 2, y + h / 2 + 1, o.size || 16, o.color || "#fff", "center", 900);
+  buttons.push({ x, y, w, h, act });
+}
+
+// 絵柄（中心 cx,cy、大きさ s）
+function drawSymbol(sym, cx, cy, s) {
+  ctx.save(); ctx.translate(cx, cy);
+  if (sym === SEVEN) {
+    ctx.font = `900 ${s * 0.82}px ${FONT}`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.lineWidth = s * 0.08; ctx.strokeStyle = "#5a0a0a"; ctx.strokeText("7", 0, s * 0.03);
+    const g = ctx.createLinearGradient(0, -s * 0.4, 0, s * 0.4); g.addColorStop(0, "#ff5a5a"); g.addColorStop(1, "#c41616");
+    ctx.fillStyle = g; ctx.fillText("7", 0, s * 0.03);
+  } else if (sym === BAR) {
+    for (let i = 0; i < 2; i++) { rr(-s * 0.4, -s * 0.28 + i * s * 0.32, s * 0.8, s * 0.24, s * 0.05); ctx.fillStyle = "#1b1b1b"; ctx.fill(); }
+    ctx.font = `900 ${s * 0.17}px ${FONT}`; ctx.fillStyle = "#fff"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText("BAR", 0, -s * 0.16); ctx.fillText("BAR", 0, s * 0.16);
+  } else if (sym === BELL) {
+    const g = ctx.createLinearGradient(0, -s * 0.35, 0, s * 0.3); g.addColorStop(0, "#ffe680"); g.addColorStop(1, "#e3a512");
+    ctx.fillStyle = g; ctx.beginPath();
+    ctx.moveTo(-s * 0.32, s * 0.22); ctx.quadraticCurveTo(-s * 0.28, -s * 0.36, 0, -s * 0.36); ctx.quadraticCurveTo(s * 0.28, -s * 0.36, s * 0.32, s * 0.22); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = "#c4870a"; ctx.fillRect(-s * 0.36, s * 0.18, s * 0.72, s * 0.08);
+    ctx.beginPath(); ctx.arc(0, s * 0.3, s * 0.07, 0, Math.PI * 2); ctx.fill();
+  } else if (sym === CHERRY) {
+    ctx.strokeStyle = "#3d7d2a"; ctx.lineWidth = s * 0.05;
+    ctx.beginPath(); ctx.moveTo(-s * 0.15, s * 0.1); ctx.quadraticCurveTo(-s * 0.05, -s * 0.25, s * 0.1, -s * 0.35); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(s * 0.17, s * 0.12); ctx.quadraticCurveTo(s * 0.12, -s * 0.15, s * 0.1, -s * 0.35); ctx.stroke();
+    for (const [x, y] of [[-s * 0.16, s * 0.18], [s * 0.17, s * 0.2]]) { const g = ctx.createRadialGradient(x - s * 0.05, y - s * 0.05, 1, x, y, s * 0.16); g.addColorStop(0, "#ff7a7a"); g.addColorStop(1, "#b5121b"); ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, s * 0.15, 0, Math.PI * 2); ctx.fill(); }
+  } else if (sym === MELON) {
+    ctx.fillStyle = "#2f8a3a"; ctx.beginPath(); ctx.arc(0, -s * 0.06, s * 0.38, 0, Math.PI); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = "#e9f5d0"; ctx.beginPath(); ctx.arc(0, -s * 0.06, s * 0.33, 0, Math.PI); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = "#ef3b4c"; ctx.beginPath(); ctx.arc(0, -s * 0.06, s * 0.29, 0, Math.PI); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = "#222"; for (const [x, y] of [[-0.14, 0.02], [0, 0.08], [0.14, 0.02], [-0.07, 0.13], [0.07, 0.13]]) { ctx.beginPath(); ctx.ellipse(x * s, y * s, s * 0.022, s * 0.035, 0, 0, Math.PI * 2); ctx.fill(); }
+  } else if (sym === REPLAY) {
+    ctx.strokeStyle = "#2a7fe0"; ctx.lineWidth = s * 0.09;
+    ctx.beginPath(); ctx.arc(0, -s * 0.02, s * 0.24, 0.3, Math.PI * 1.75); ctx.stroke();
+    ctx.fillStyle = "#2a7fe0"; ctx.beginPath(); ctx.moveTo(s * 0.32, -s * 0.1); ctx.lineTo(s * 0.14, -s * 0.24); ctx.lineTo(s * 0.32, -s * 0.32); ctx.closePath(); ctx.fill();
+    ctx.font = `900 ${s * 0.13}px ${FONT}`; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText("REPLAY", 0, s * 0.36);
+  }
+  ctx.restore();
+}
+
+
+
+function machine() {
+  const mw = Math.min(W - 16, 520), cx = W / 2;
+  const reelW = mw * 0.235, gap = mw * 0.025, symH = reelW * 0.82;
+  const winW = reelW * 3 + gap * 2, winH = symH * 3;
+  const top = Math.max(24, Math.min((H - (winH + 480)) / 2, 120));
+  return { mw, cx, reelW, gap, symH, winW, winH, wx: cx - winW / 2, wy: top + 104, top };
+}
+
+function drawPlay(t) {
+  const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, "#2a1640"); g.addColorStop(1, "#120a1c");
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  buttons = [];
+  const M = machine(), narrow = W < 520;
+  const fx = M.cx - M.mw / 2, fy = M.top - 10, fh = Math.min(H - fy - 8, M.winH + 380);
+  rr(fx, fy, M.mw, fh, 22);
+  const fg = ctx.createLinearGradient(0, fy, 0, fy + fh); fg.addColorStop(0, S.bonus ? "#7a2a2a" : "#3b2a5e"); fg.addColorStop(1, "#1c1430");
+  ctx.fillStyle = fg; ctx.fill(); ctx.strokeStyle = "#d9b45a"; ctx.lineWidth = 3; ctx.stroke();
+  if (flashT > 0 && Math.floor(t * 12) % 2 === 0) { ctx.fillStyle = "rgba(255,230,120,0.18)"; ctx.fill(); }
+  txt("ラッキーリール", M.cx, fy + 26, narrow ? 20 : 24, "#ffd76a", "center", 900);
+  txt(`この台：${S.session.spins}回転　BIG ${S.session.big}　REG ${S.session.reg}`, M.cx, fy + 50, 12, "#c9b8dd");
+  // ランプ
+  const lampOn = S.pending && lampAnnounce === 1;
+  const ly = M.wy - 28;
+  rr(M.cx - 80, ly - 15, 160, 30, 15);
+  ctx.fillStyle = lampOn ? `rgba(255,${120 + 80 * Math.sin(t * 8)},60,1)` : "rgba(80,60,90,0.8)"; ctx.fill();
+  txt("★ラッキー★", M.cx, ly + 1, 15, lampOn ? "#fff" : "#8a7a98", "center", 900);
+  // リール窓
+  rr(M.wx - 22, M.wy - 8, M.winW + 44, M.winH + 16, 12); ctx.fillStyle = "#0d0812"; ctx.fill();
+  if (reachT > 0) { ctx.strokeStyle = `rgba(255,90,140,${0.5 + 0.5 * Math.sin(t * 20)})`; ctx.lineWidth = 4; ctx.stroke(); }
+  for (let i = 0; i < 3; i++) {
+    const r = reels[i], x = M.wx + i * (M.reelW + M.gap);
+    ctx.save(); rr(x, M.wy, M.reelW, M.winH, 8); ctx.clip();
+    const bgc = ctx.createLinearGradient(0, M.wy, 0, M.wy + M.winH); bgc.addColorStop(0, "#d9d3df"); bgc.addColorStop(0.5, "#fffdf6"); bgc.addColorStop(1, "#d9d3df");
+    ctx.fillStyle = bgc; ctx.fillRect(x, M.wy, M.reelW, M.winH);
+    const base = Math.floor(r.pos), frac = r.pos - base;
+    for (let k = -2; k <= 2; k++) {
+      const sym = STRIPS[i][mod(base - k)];
+      drawSymbol(sym, x + M.reelW / 2, M.wy + M.winH / 2 + (k + frac) * M.symH, M.symH * 0.86);
+    }
+    if (r.spinning && r.settle <= 0 && S.speed === "real") { ctx.fillStyle = "rgba(255,255,255,0.18)"; ctx.fillRect(x, M.wy, M.reelW, M.winH); }
+    ctx.restore();
+  }
+  // 5ライン（当たったラインは光る）
+  const rowY = row => M.wy + M.winH / 2 + row * M.symH;
+  const xL = M.wx - 14, xR = M.wx + M.winW + 14;
+  LINES.forEach((L, li) => {
+    const on = winLines.includes(li);
+    if (!on) return;
+    ctx.strokeStyle = `rgba(255,220,90,${0.65 + 0.35 * Math.sin(t * 14)})`; ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.moveTo(xL, rowY(L[0])); ctx.lineTo(M.wx + M.reelW / 2, rowY(L[0]));
+    ctx.lineTo(M.wx + M.winW / 2, rowY(L[1])); ctx.lineTo(M.wx + M.winW - M.reelW / 2, rowY(L[2])); ctx.lineTo(xR, rowY(L[2])); ctx.stroke();
+  });
+  // ラインのランプ（左右）
+  for (const [row, label] of [[-1, "2"], [0, "1"], [1, "3"]]) {
+    for (const x of [M.wx - 15, M.wx + M.winW + 15]) { ctx.beginPath(); ctx.arc(x, rowY(row), 7, 0, Math.PI * 2); ctx.fillStyle = phase === "idle" && !freeSpin ? "#5a4a6a" : "#ff6b6b"; ctx.fill(); }
+  }
+  // 表示パネル
+  const py = M.wy + M.winH + 20;
+  const panel = (x, w, label, val, col) => { rr(x, py, w, 46, 8); ctx.fillStyle = "#0d0812"; ctx.fill(); txt(label, x + w / 2, py + 12, 10, "#a99bb8", "center", 800); txt(String(val), x + w / 2, py + 31, 20, col, "center", 900); };
+  const pw = (M.winW - 16) / 3;
+  panel(M.wx, pw, "クレジット", S.coins, "#ff6b6b");
+  panel(M.wx + pw + 8, pw, S.bonus ? `${S.bonus === "big" ? "BIG" : "REG"} 獲得` : "ゲーム数", S.bonus ? `${S.bonusPaid}/${BONUS_LIMIT[S.bonus]}` : S.session.spins, "#ffd76a");
+  panel(M.wx + (pw + 8) * 2, pw, "払い出し", lastPay || (freeSpin ? "REP" : 0), "#7fe08a");
+  // ストップボタン
+  const sy = py + 60;
+  for (let i = 0; i < 3; i++) {
+    const r = reels[i], active = phase === "spin" && r.spinning && r.settle <= 0;
+    button(M.wx + i * (M.reelW + M.gap), sy, M.reelW, 52, "STOP", { grad: active ? ["#ff7a5a", "#c43a1e"] : ["#5a4a6a", "#3a2d48"], stroke: active ? "#ffd2a0" : "#6a5a7a", size: 17, color: active ? "#fff" : "#9a8aaa", r: 26 }, () => stopReel(i));
+  }
+  // レバーなど
+  const by = sy + 64, canLever = phase === "idle";
+  button(M.wx, by, M.winW * 0.58, 54, freeSpin ? "リプレイ・レバー" : "3枚掛け・レバー", { grad: canLever ? ["#4ad07a", "#1f8a45"] : ["#3a5a45", "#24382c"], size: narrow ? 15 : 17, r: 16 }, lever);
+  const sw = (M.winW * 0.42 - 16) / 2;
+  button(M.wx + M.winW * 0.58 + 8, by, sw, 54, S.speed === "real" ? "速い" : "遅い", { fill: "rgba(255,255,255,0.1)", stroke: "rgba(255,255,255,0.3)", size: 14, r: 16 },
+    () => { if (phase === "idle") { S.speed = S.speed === "real" ? "slow" : "real"; save(); say(S.speed === "real" ? "本物の速さ" : "ゆっくりモード", "#fff", 1); } });
+  button(M.wx + M.winW * 0.58 + 16 + sw, by, sw, 54, S.coins < BET && !freeSpin ? "補充" : "やめる", { fill: "rgba(255,255,255,0.1)", stroke: "rgba(255,255,255,0.3)", size: 14, r: 16 },
+    () => { if (S.coins < BET && !freeSpin) refill(); else if (phase === "idle" && !S.bonus) leaveMachine(); else if (S.bonus) say("ボーナス中はやめられません", "#ffb3b3", 1.4); });
+  if (!narrow) txt("スペース：レバー　Z・X・C：ストップ", M.cx, by + 72, 12, "#a99bb8");
+  if (msg) {
+    ctx.save(); ctx.globalAlpha = clamp(msg.t / 0.3, 0, 1);
+    const size = narrow ? 22 : 28; ctx.font = `900 ${size}px ${FONT}`;
+    const w = ctx.measureText(msg.text).width + 40, y = M.wy + M.winH / 2;
+    rr(M.cx - w / 2, y - 26, w, 52, 26); ctx.fillStyle = "rgba(20,8,30,0.85)"; ctx.fill();
+    txt(msg.text, M.cx, y + 1, size, msg.color, "center", 900);
+    ctx.restore();
+  }
+}
+
+function drawTitle(t) {
+  const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, "#2a1640"); g.addColorStop(1, "#120a1c");
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  buttons = [];
+  const cx = W / 2, small = W < 520;
+  let y = Math.max(16, (H - (S.lastReveal ? 820 : 760)) / 2);
+  [SEVEN, BAR, SEVEN].forEach((s, i) => drawSymbol(s, cx + (i - 1) * 60, y + 30 + Math.sin(t * 3 + i) * 3, 50));
+  y += 80;
+  txt("ラッキーリール", cx, y, small ? 32 : 42, "#ffd76a", "center", 900); y += 28;
+  txt("日本のパチスロと同じしくみの3リールスロット", cx, y, small ? 12 : 14, "#c9b8dd", "center", 700); y += 18;
+  const bw = Math.min(370, W - 24), x0 = cx - bw / 2;
+  if (S.lastReveal) {
+    const r = S.lastReveal;
+    rr(x0, y, bw, 46, 12); ctx.fillStyle = "rgba(255,215,106,0.15)"; ctx.fill();
+    txt(`さっきの台は 設定${r.setting} でした`, cx, y + 15, 15, "#ffd76a", "center", 900);
+    txt(`${r.spins}回転　BIG ${r.big}回　REG ${r.reg}回`, cx, y + 33, 12, "#e6dcf0", "center", 700);
+    y += 54;
+  }
+  const rules = [
+    "・3枚掛けでレバー、STOPで左・中・右を止める",
+    "・横3本＋斜め2本の5ライン（21コマ・すべり最大4コマ）",
+    "・ベルとリプレイは当たっていれば自動でそろう",
+    "・チェリー・スイカは、ねらわないと取りこぼすことがある",
+    "・★ラッキー★が光ったら、7かBARをねらって止める",
+    "・台ごとに設定1〜6。やめると答え合わせ",
+    "・コインは無料。なくなったら「補充」で50枚",
+  ];
+  const lh = small ? 19 : 20, rh = rules.length * lh + 16;
+  rr(x0, y, bw, rh, 12); ctx.fillStyle = "rgba(255,255,255,0.07)"; ctx.fill();
+  rules.forEach((r, i) => txt(r, x0 + 10, y + 8 + lh / 2 + i * lh, small ? 11 : 13, "#e6dcf0", "left", 700));
+  y += rh + 10;
+  const rows = [[SEVEN, `BIG（${BONUS_LIMIT.big}枚まで）`], [BAR, `REG（${BONUS_LIMIT.reg}枚まで）`], [MELON, "15枚"], [BELL, "8枚（ボーナス中は15枚）"], [CHERRY, "左リールのみ　1ラインにつき2枚"], [REPLAY, "もう1回（コインいらず）"]];
+  const rh2 = 31;
+  rr(x0, y, bw, rows.length * rh2 + 10, 12); ctx.fillStyle = "rgba(0,0,0,0.25)"; ctx.fill();
+  rows.forEach(([s, label], i) => {
+    const yy = y + 5 + i * rh2 + rh2 / 2, n = s === CHERRY ? 1 : 3;
+    for (let k = 0; k < n; k++) drawSymbol(s, x0 + 22 + k * 26, yy, 26);
+    txt(label, x0 + 104, yy, small ? 11 : 13, "#fff", "left", 800);
+  });
+  y += rows.length * rh2 + 20;
+  button(x0, y, bw, 52, `台を選んで遊ぶ（コイン ${S.coins}枚）`, { grad: ["#4ad07a", "#1f8a45"], size: small ? 16 : 18 }, () => { audio(); if (S.session.spins === 0 && !S.bonus) newMachine(); scene = "play"; });
+  y += 60;
+  button(cx - 70, y, 140, 32, "← 置き場へ", { fill: "transparent", color: "#c9b8dd", size: 14 }, () => { location.href = "../../"; });
+}
+
+// ---------- ループ ----------
+let lastT = performance.now();
+function frame(now) {
+  requestAnimationFrame(frame);
+  const dt = Math.min(0.05, (now - lastT) / 1000); lastT = now;
+  update(dt);
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  if (scene === "title") drawTitle(now / 1000);
+  else drawPlay(now / 1000);
+}
+resize();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
