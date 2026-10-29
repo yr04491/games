@@ -13,6 +13,7 @@
 </head>
 <body>
 <canvas id="c"></canvas>
+<script src="../../shared/medal.js"></script>
 <script>
 "use strict";
 // ============================================================
@@ -350,6 +351,7 @@ function start() {
 function gameOver() {
   scene = "over"; overT = 0;
   const dist = Math.floor(posP);
+  window.Medal && Medal.add(Math.floor(dist / 10));   // 共通メダル：10mで1枚
   const isBest = dist > best;
   if (isBest) { best = dist; try { localStorage.setItem("kusoge004-best", String(best)); } catch (e) { } }
   lastRun = { dist, isBest, time: elapsed };

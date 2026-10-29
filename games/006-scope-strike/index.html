@@ -147,6 +147,7 @@
   </div>
 </div>
 
+<script src="../../shared/medal.js"></script>
 <script>
 "use strict";
 // ============================================================
@@ -484,6 +485,7 @@ function endStage(win, reason) {
     if (stars > prev) S.stars[stage.n - 1] = stars;
   }
   const gain = earned + bonus;
+  if (win) window.Medal && Medal.add(15 + Math.round((stage.n - 1) * 15 / 11));   // 共通メダル：クリアで15〜30枚
   S.coins += gain;
   if (AMMO_KEYS.every(k => S.ammo[k] <= 0) && S.coins < AMMO.normal.price) { S.ammo.normal += 10; reason = (reason ? reason + "・" : "") + "通常弾10発を支給"; }
   save();

@@ -13,6 +13,7 @@
 </head>
 <body>
 <canvas id="c"></canvas>
+<script src="../../shared/medal.js"></script>
 <script>
 "use strict";
 // ============================================================
@@ -170,6 +171,7 @@ function solve() {
   solvedT = 0.55;
   sndSolve();
   floor++;
+  window.Medal && Medal.add(2);   // 共通メダル：1階のぼるごとに2枚
   playerTo = floor * FLOOR_M; climbT = 0;
   if (floor > best) { best = floor; try { localStorage.setItem("kusoge003-best", String(best)); } catch (e) { } }
   const quick = puzzleTime < 6;

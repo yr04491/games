@@ -13,6 +13,7 @@
 </head>
 <body>
 <canvas id="c"></canvas>
+<script src="../../shared/medal.js"></script>
 <script>
 "use strict";
 // ============================================================
@@ -184,6 +185,7 @@ function update(dt) {
 
   // 日付の切り替え
   if (day() !== prevDay) {
+    window.Medal && Medal.add(7);   // 共通メダル：1日生き延びるごとに7枚
     if (prevDay >= GOAL_DAYS) { G.state = "clear"; G.endT = 0; SFX.build(); return; }
     say(`DAY ${day()}　夜はオオカミが出るぞ`, "#ffd27a");
     G.wolves.forEach(w => { w.flee = true; });

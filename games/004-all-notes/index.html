@@ -14,6 +14,7 @@
 </head>
 <body>
 <canvas id="c"></canvas>
+<script src="../../shared/medal.js"></script>
 <script>
 "use strict";
 // ============================================================
@@ -84,6 +85,7 @@ let buttons = [];
 let actx = null, analyser = null, micStream = null, master = null, demoTimer = null, noiseBuf = null;
 let freqDb = null, prevMag = null, td = null, binHz = 0;
 let fluxHist, fluxPrev, lastAnalyze = 0, prevFrameT = 0;
+let medalT = 0;   // 共通メダル：演奏中の時間を数える
 let notes = [], particles = [], pops = [], rings = [];
 let laneLast, globalLast;
 let envLog = [], bpm = 0, bpmCand = 0, bpmStable = 0, travel = 1.15, lastBpmCalc = 0;
@@ -743,7 +745,11 @@ function frame() {
   const dt = Math.min(0.05, (pn - lastFrame) / 1000);
   lastFrame = pn;
   const t = now();
-  if (scene === "play" && analyser) update(t, dt);
+  if (scene === "play" && analyser) {
+    update(t, dt);
+    medalT += dt;
+    if (medalT >= 6) { medalT -= 6; window.Medal && Medal.add(1); }   // 共通メダル：6秒で1枚
+  }
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
   buttons = [];
   if (scene === "title") drawTitle(pn / 1000);

@@ -167,6 +167,8 @@
   </div>
 </section>
 
+<script src="../../shared/medal.js"></script>
+<script>Medal.requireUnlock("008");</script>
 <script>
 "use strict";
 // ============================================================
@@ -414,6 +416,7 @@ function sellValue(h) { return 10 * Math.pow(2, h.job.rank - 1); }
 function waveHp(w) { return Math.round(30 * G.st.hp * Math.pow(HP_GROW, w - 1)); }
 function startWave() {
   G.wave++;
+  if (G.wave > 1) window.Medal && Medal.add(3);   // 共通メダル：ウェーブ突破で3枚
   if (G.wave > 1) G.coins += Math.round((WAVE_BONUS + G.wave) * G.buff.coin);
   const boss = G.wave % 10 === 0;
   G.waveT = boss ? 60 : 18;
@@ -707,6 +710,7 @@ function showBanner(text, sub) { banner = { text, sub, t: 0, dur: 1.5 }; }
 function win() {
   if (G.state !== "play") return;
   G.state = "end"; G.win = true; G.endT = 1.6;
+  window.Medal && Medal.add(3);   // 共通メダル：最終ウェーブ突破
   save.cleared[stageIdx] = true; writeSave();
   showBanner("STAGE CLEAR!", G.st.name); SFX.clear();
 }

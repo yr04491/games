@@ -13,6 +13,7 @@
 </head>
 <body>
 <canvas id="c"></canvas>
+<script src="../../shared/medal.js"></script>
 <script>
 "use strict";
 // ============================================================
@@ -198,6 +199,7 @@ const sndNo = () => beep(160, 0.15, "square", 0.05);
 
 // ---------- 実行中の状態 ----------
 let scene = "title";          // title / play
+let medalT = 0, lastInputT = -1e9;   // 共通メダル：操作している時間を数える
 let modal = null;             // null / "upgrade" / "rebirth" / {type:"offline",coins} / {type:"msg",...}
 let tHP = 0, tMax = 1;        // 木の体力
 let treeName = "";
@@ -448,6 +450,7 @@ function modalButtons() {
 function pos(e) { return { x: e.clientX, y: e.clientY }; }
 
 cv.addEventListener("pointerdown", e => {
+  lastInputT = performance.now();
   audio();
   const p = pos(e);
   if (scene === "title") { startGame(); return; }
@@ -507,6 +510,7 @@ function endDrag(e) {
 cv.addEventListener("pointerup", endDrag);
 cv.addEventListener("pointercancel", () => { drag = null; pressed = null; });
 addEventListener("keydown", e => {
+  lastInputT = performance.now();
   if (scene === "title" && (e.key === "Enter" || e.key === " ")) { audio(); startGame(); }
   else if (scene === "play" && !modal) {
     if (e.key === "b") buy();
@@ -545,6 +549,12 @@ function update(dt) {
   for (const b of beams) b.t -= dt;
   beams = beams.filter(b => b.t > 0);
   if (scene !== "play") return;
+
+  // 共通メダル：操作している間だけ6秒で1枚（60秒操作がなければ止める）
+  if (!document.hidden && performance.now() - lastInputT < 60000) {
+    medalT += dt;
+    if (medalT >= 6) { medalT -= 6; window.Medal && Medal.add(1); }
+  }
 
   // コイン/秒の記録（放置ボーナス用）
   coinWindowT += dt;

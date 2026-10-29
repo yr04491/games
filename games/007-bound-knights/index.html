@@ -123,6 +123,8 @@
   </div>
 </section>
 
+<script src="../../shared/medal.js"></script>
+<script>Medal.requireUnlock("007");</script>
 <script>
 "use strict";
 // ============================================================
@@ -510,6 +512,7 @@ function endShot() {
   G.shot = null;
   G.enemies = G.enemies.filter(e => !e.dead);
   if (G.enemies.length === 0) {
+    window.Medal && Medal.add(10);   // 共通メダル：バトル勝利で10枚
     if (G.battle < G.q.battles.length - 1) {
       G.battle++; spawnBattle();
       G.state = "trans"; G.transT = 1.3;

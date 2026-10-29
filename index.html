@@ -20,12 +20,41 @@
   .desc{font-size:14px;color:var(--sub);margin:0}
   footer{margin-top:48px;font-size:13px;color:var(--sub)}
   footer a{color:inherit}
+  .medalbar{display:none;align-items:center;gap:12px 16px;flex-wrap:wrap;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px 18px;margin:0 0 12px}
+  .medalbar.on{display:flex}
+  .mcoin{width:28px;height:28px;border-radius:50%;flex:none;background:radial-gradient(circle at 35% 35%,#fff3b0,#f2b134 55%,#b9781a);box-shadow:inset 0 0 0 2px #a86a12}
+  .mval{font-size:24px;font-weight:900;line-height:1;font-variant-numeric:tabular-nums}
+  .mlabel{font-size:12px;color:var(--sub);font-weight:700}
+  .macct{margin-left:auto;display:flex;align-items:center;gap:10px;font-size:13px;color:var(--sub)}
+  .btn{font:inherit;font-size:13px;font-weight:700;border-radius:999px;padding:6px 14px;border:1px solid var(--line);background:transparent;color:var(--text);cursor:pointer}
+  .btn:hover{border-color:var(--accent);color:var(--accent)}
+  .mhelp{font-size:13px;color:var(--sub);margin:0 0 24px;display:none}
+  .mhelp.on{display:block}
+  .notice{display:none;background:color-mix(in srgb,var(--accent) 12%,var(--card));border:1px solid color-mix(in srgb,var(--accent) 40%,var(--line));border-radius:12px;padding:10px 14px;font-size:14px;margin:0 0 12px}
+  .notice.on{display:block}
+  a.card{position:relative}
+  a.card.locked .title,a.card.locked .desc,a.card.locked .no{opacity:.45}
+  .lockrow{display:none;margin-top:14px;align-items:center;gap:8px;flex-wrap:wrap}
+  a.card.locked .lockrow{display:flex}
+  .unlock{font:inherit;font-size:13px;font-weight:800;border:none;border-radius:999px;padding:7px 14px;background:var(--accent);color:#fff;cursor:pointer;display:inline-flex;align-items:center;gap:6px}
+  .unlock:disabled{background:var(--line);color:var(--sub);cursor:default}
+  .unlock .mcoin{width:14px;height:14px;box-shadow:inset 0 0 0 1.5px #a86a12}
+  .short{font-size:12px;color:var(--sub)}
+  .lockic{width:12px;height:10px;border-radius:2px;background:currentColor;position:relative;margin-top:4px;display:inline-block}
+  .lockic::before{content:"";position:absolute;left:2px;top:-6px;width:8px;height:8px;border:2px solid currentColor;border-bottom:none;border-radius:5px 5px 0 0;box-sizing:border-box}
 </style>
 </head>
 <body>
 <main>
   <h1>クソゲー置き場</h1>
   <p class="lead">ブラウザですぐ遊べる自作ゲームをまとめています。PCでもスマホでも遊べます。</p>
+  <div class="notice" id="notice"></div>
+  <div class="medalbar" id="medalbar">
+    <span class="mcoin"></span>
+    <div><div class="mval" id="mval">0</div><div class="mlabel">メダル</div></div>
+    <div class="macct"><span id="acct">ゲストで保存中</span><button class="btn" id="acctBtn" type="button">Googleでつなぐ</button></div>
+  </div>
+  <p class="mhelp" id="mhelp">ゲームで遊ぶとメダルが貯まります。No.007 からは 1000 メダルで解放できます。</p>
   <ul>
     <li>
       <a class="card" href="games/001-heater/">
@@ -86,5 +115,66 @@
   </ul>
   <footer>by <a href="https://yr04491.vercel.app">yr04491</a></footer>
 </main>
+<script src="shared/medal.js"></script>
+<script>
+(function () {
+  const $ = id => document.getElementById(id);
+  const cards = [...document.querySelectorAll("a.card")].map(a => {
+    const no = (a.getAttribute("href").match(/games\/(\d{3})-/) || [])[1];
+    if (no && !Medal.isFree(no)) {
+      const row = document.createElement("div");
+      row.className = "lockrow";
+      row.innerHTML = '<button class="unlock" type="button"><span class="lockic"></span>' + Medal.UNLOCK_COST.toLocaleString() + ' メダルで解放</button><span class="short"></span>';
+      a.appendChild(row);
+    }
+    return { a, no };
+  });
+  const locked = new URLSearchParams(location.search).get("locked");
+
+  function render(st) {
+    if (!st.enabled) return;
+    $("medalbar").classList.add("on"); $("mhelp").classList.add("on");
+    $("mval").textContent = Math.max(0, st.medals).toLocaleString();
+    $("acct").textContent = st.guest ? "ゲストで保存中" : st.name + " でログイン中";
+    $("acctBtn").textContent = st.guest ? "Googleでつなぐ" : "ログアウト";
+    for (const { a, no } of cards) {
+      if (!no || Medal.isFree(no)) continue;
+      const open = Medal.isUnlocked(no);
+      a.classList.toggle("locked", !open);
+      const btn = a.querySelector(".unlock"), short = a.querySelector(".short");
+      const lack = Medal.UNLOCK_COST - st.medals;
+      btn.disabled = lack > 0;
+      short.textContent = lack > 0 ? "あと " + lack.toLocaleString() + " 枚" : "";
+    }
+    if (locked && !Medal.isUnlocked(locked)) {
+      $("notice").textContent = "No." + locked + " はまだ解放されていません。" + Medal.UNLOCK_COST.toLocaleString() + " メダルで解放できます。";
+      $("notice").classList.add("on");
+    } else $("notice").classList.remove("on");
+  }
+  Medal.onChange(render);
+
+  for (const { a, no } of cards) {
+    a.addEventListener("click", async e => {
+      if (!a.classList.contains("locked")) return;
+      e.preventDefault();
+      const btn = a.querySelector(".unlock");
+      if (btn.disabled) return;
+      const title = a.querySelector(".title").textContent;
+      if (!confirm("「" + title + "」を " + Medal.UNLOCK_COST.toLocaleString() + " メダルで解放しますか？")) return;
+      btn.disabled = true;
+      try {
+        if (await Medal.unlock(no)) location.href = a.href;
+        else alert("メダルが足りません");
+      } catch (err) { alert("解放できませんでした。通信を確認してください"); console.warn(err); }
+      render(Medal.state);
+    });
+  }
+
+  $("acctBtn").addEventListener("click", () => {
+    if (Medal.state.guest) Medal.linkGoogle();
+    else if (confirm("ログアウトしますか？\nもう一度 Google でログインすれば、メダルは戻ります。")) Medal.signOut();
+  });
+})();
+</script>
 </body>
 </html>
