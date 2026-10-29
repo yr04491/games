@@ -1,0 +1,689 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>パターゴルフ</title>
+<style>
+  html,body{margin:0;height:100%;background:#16241a;overflow:hidden;touch-action:none;
+    font-family:system-ui,-apple-system,"Hiragino Sans","Noto Sans CJK JP","Noto Sans JP",sans-serif;
+    -webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
+  canvas{display:block;width:100vw;height:100vh}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script src="../../shared/medal.js"></script>
+<script>Medal.requireUnlock("010");</script>
+<script>
+"use strict";
+// ============================================================
+//  パターゴルフ — 上から見た9ホールのパターゴルフ
+//  ・ひとり / CPU対戦（弱い・普通・強い）/ 同じ端末で2人対戦
+//  ・どこでも引っ張って離すと打つ。縦長の画面ではコースを縦向きにする
+//  ・壁ではね返る。坂は流れる、砂は止まりやすい、池は1打罰
+//  ・画像ファイルなし：すべてコードで描画
+// ============================================================
+const cv = document.getElementById("c");
+const ctx = cv.getContext("2d");
+const FONT = 'system-ui,-apple-system,"Hiragino Sans","Noto Sans CJK JP","Noto Sans JP",sans-serif';
+
+let W = 0, H = 0, DPR = 1, L = null;
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = innerWidth; H = innerHeight;
+  cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
+  layout();
+}
+addEventListener("resize", resize);
+
+// ---------- ユーティリティ ----------
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+const rand = (a, b) => a + Math.random() * (b - a);
+const hyp = Math.hypot;
+function gauss() { let u = 0, v = 0; while (!u) u = Math.random(); while (!v) v = Math.random(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); }
+function inPoly(pts, x, y) {
+  let ins = false;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const [xi, yi] = pts[i], [xj, yj] = pts[j];
+    if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) ins = !ins;
+  }
+  return ins;
+}
+function inZone(z, x, y) { return z.r !== undefined ? hyp(x - z.cx, y - z.cy) < z.r : x >= z.x && x <= z.x + z.w && y >= z.y && y <= z.y + z.h; }
+
+// ---------- 定数 ----------
+const FW = 1000, FH = 600;            // コースの枠（横向きの座標）
+const BR = 9, CUP_R = 14, CUP_MAX = 430;
+const MAX_V = 900, FRICTION = 160, SAND_F = 750, DAMP = 0.15, WALL_E = 0.72, STOP_V = 6, SLOPE_A = 110;
+const STEP = 1 / 120, MAX_STROKES = 10;
+
+// ---------- コース ----------
+const R4 = (x, y, w, h) => [[x, y], [x + w, y], [x + w, y + h], [x, y + h]];
+const HOLES = [
+  { name: "まっすぐ", par: 2, start: [170, 300], cup: [830, 300], outer: R4(100, 220, 800, 160) },
+  { name: "まわり道", par: 3, start: [170, 220], cup: [830, 220], outer: R4(100, 140, 800, 320), blocks: [R4(430, 140, 140, 200)] },
+  { name: "L字", par: 3, start: [210, 130], cup: [840, 450], outer: [[100, 60], [320, 60], [320, 360], [900, 360], [900, 540], [100, 540]] },
+  { name: "坂道", par: 3, start: [170, 200], cup: [830, 200], outer: R4(100, 120, 800, 360), slopes: [{ x: 380, y: 120, w: 240, h: 360, ax: 0, ay: 1 }] },
+  { name: "砂の島", par: 3, start: [170, 300], cup: [830, 300], outer: R4(100, 100, 800, 400), sand: [{ cx: 500, cy: 300, r: 100 }, { x: 740, y: 380, w: 160, h: 120 }] },
+  { name: "池越え", par: 3, start: [170, 200], cup: [830, 200], outer: R4(100, 100, 800, 400), water: [{ x: 420, y: 100, w: 160, h: 290 }] },
+  { name: "S字", par: 4, start: [190, 150], cup: [810, 450], outer: R4(80, 60, 840, 480), blocks: [R4(330, 60, 40, 340), R4(630, 200, 40, 340)] },
+  { name: "坂と池", par: 3, start: [170, 400], cup: [830, 400], outer: R4(100, 100, 800, 400), slopes: [{ x: 330, y: 190, w: 340, h: 310, ax: 0, ay: -1 }], water: [{ x: 330, y: 100, w: 340, h: 90 }] },
+  { name: "最終ホール", par: 4, start: [150, 300], cup: [860, 300], outer: R4(80, 80, 840, 440),
+    blocks: [[[500, 190], [610, 300], [500, 410], [390, 300]]], water: [{ cx: 720, cy: 170, r: 55 }], sand: [{ cx: 720, cy: 430, r: 55 }],
+    slopes: [{ x: 770, y: 80, w: 150, h: 440, ax: -1, ay: 0 }] },
+];
+for (const h of HOLES) { h.blocks = h.blocks || []; h.sand = h.sand || []; h.water = h.water || []; h.slopes = h.slopes || []; }
+const TOTAL_PAR = HOLES.reduce((s, h) => s + h.par, 0);
+
+function segsOf(h) {
+  const out = [];
+  for (const poly of [h.outer, ...h.blocks])
+    for (let i = 0; i < poly.length; i++) { const a = poly[i], b = poly[(i + 1) % poly.length]; out.push([a[0], a[1], b[0], b[1]]); }
+  return out;
+}
+
+// ---------- 物理 ----------
+// st = {x, y, vx, vy}。ev に holed / water / bounce を記録。動いていれば true
+function physStep(h, segs, st, dt, ev, live) {
+  let v = hyp(st.vx, st.vy);
+  if (v === 0) return false;
+  const n = Math.max(1, Math.ceil(v * dt / (BR * 0.5)));
+  const s = dt / n;
+  for (let k = 0; k < n; k++) {
+    for (const z of h.slopes) if (inZone(z, st.x, st.y)) { st.vx += z.ax * SLOPE_A * s; st.vy += z.ay * SLOPE_A * s; }
+    st.x += st.vx * s; st.y += st.vy * s;
+    for (const g of segs) {
+      const dx = g[2] - g[0], dy = g[3] - g[1], l2 = dx * dx + dy * dy;
+      const t = clamp(((st.x - g[0]) * dx + (st.y - g[1]) * dy) / l2, 0, 1);
+      const qx = g[0] + dx * t, qy = g[1] + dy * t;
+      const ex = st.x - qx, ey = st.y - qy, d = hyp(ex, ey);
+      if (d >= BR || d === 0) continue;
+      const nx = ex / d, ny = ey / d;
+      st.x = qx + nx * BR; st.y = qy + ny * BR;
+      const vn = st.vx * nx + st.vy * ny;
+      if (vn < 0) { st.vx -= (1 + WALL_E) * vn * nx; st.vy -= (1 + WALL_E) * vn * ny; if (live) sndWall(-vn); }
+    }
+    for (const z of h.water) if (inZone(z, st.x, st.y)) { ev.water = true; st.vx = st.vy = 0; return false; }
+    if (hyp(st.x - h.cup[0], st.y - h.cup[1]) < CUP_R && hyp(st.vx, st.vy) < CUP_MAX) { ev.holed = true; st.vx = st.vy = 0; return false; }
+  }
+  const sand = h.sand.some(z => inZone(z, st.x, st.y));
+  v = hyp(st.vx, st.vy);
+  const nv = v - ((sand ? SAND_F : FRICTION) + v * DAMP) * dt;
+  if (nv < STOP_V) { st.vx = st.vy = 0; return false; }
+  st.vx *= nv / v; st.vy *= nv / v;
+  return true;
+}
+
+// ---------- CPU用：カップまでの「道のり」の地図 ----------
+const CS = 8, COLS = FW / CS | 0, ROWS = FH / CS | 0;
+function buildField(h, segs) {
+  const N = COLS * ROWS, open = new Uint8Array(N), cost = new Float32Array(N), dist = new Float32Array(N).fill(Infinity);
+  for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
+    const x = c * CS + CS / 2, y = r * CS + CS / 2, i = r * COLS + c;
+    if (!inPoly(h.outer, x, y) || h.blocks.some(b => inPoly(b, x, y)) || h.water.some(z => inZone(z, x, y))) continue;
+    let md = Infinity;
+    for (const g of segs) {
+      const dx = g[2] - g[0], dy = g[3] - g[1], l2 = dx * dx + dy * dy;
+      const t = clamp(((x - g[0]) * dx + (y - g[1]) * dy) / l2, 0, 1);
+      md = Math.min(md, hyp(x - g[0] - dx * t, y - g[1] - dy * t));
+    }
+    if (md < BR * 0.9) continue;
+    open[i] = 1; cost[i] = h.sand.some(z => inZone(z, x, y)) ? 3 : 1;
+  }
+  // ダイクストラ（小さな2分ヒープ）
+  const heap = [];
+  const push = (d, i) => { heap.push([d, i]); let k = heap.length - 1; while (k) { const p = (k - 1) >> 1; if (heap[p][0] <= heap[k][0]) break; [heap[p], heap[k]] = [heap[k], heap[p]]; k = p; } };
+  const pop = () => { const top = heap[0], last = heap.pop(); if (heap.length) { heap[0] = last; let k = 0; for (;;) { const l = 2 * k + 1, r = l + 1; let m = k; if (l < heap.length && heap[l][0] < heap[m][0]) m = l; if (r < heap.length && heap[r][0] < heap[m][0]) m = r; if (m === k) break; [heap[m], heap[k]] = [heap[k], heap[m]]; k = m; } } return top; };
+  const cc = clamp(h.cup[0] / CS | 0, 0, COLS - 1), cr = clamp(h.cup[1] / CS | 0, 0, ROWS - 1);
+  dist[cr * COLS + cc] = 0; push(0, cr * COLS + cc);
+  const NB = [[1, 0, 1], [-1, 0, 1], [0, 1, 1], [0, -1, 1], [1, 1, 1.414], [1, -1, 1.414], [-1, 1, 1.414], [-1, -1, 1.414]];
+  while (heap.length) {
+    const [d, i] = pop();
+    if (d > dist[i]) continue;
+    const r = i / COLS | 0, c = i % COLS;
+    for (const [dc, dr, w] of NB) {
+      const c2 = c + dc, r2 = r + dr;
+      if (c2 < 0 || r2 < 0 || c2 >= COLS || r2 >= ROWS) continue;
+      const j = r2 * COLS + c2;
+      if (!open[j]) continue;
+      const nd = d + CS * w * cost[j];
+      if (nd < dist[j]) { dist[j] = nd; push(nd, j); }
+    }
+  }
+  return (x, y) => {
+    const c = clamp(x / CS | 0, 0, COLS - 1), r = clamp(y / CS | 0, 0, ROWS - 1);
+    let best = dist[r * COLS + c];
+    if (!isFinite(best)) for (let dr = -2; dr <= 2; dr++) for (let dc = -2; dc <= 2; dc++) {
+      const c2 = c + dc, r2 = r + dr;
+      if (c2 >= 0 && r2 >= 0 && c2 < COLS && r2 < ROWS) best = Math.min(best, dist[r2 * COLS + c2] + CS * 2);
+    }
+    return isFinite(best) ? best : 5000;
+  };
+}
+
+// ---------- 音 ----------
+let AC = null, mute = false, lastWall = 0;
+function audio() {
+  if (!AC) { try { AC = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { AC = null; } }
+  if (AC && AC.state === "suspended") AC.resume();
+}
+function tone(freq, dur, type, vol, slide) {
+  if (!AC || mute) return;
+  const t = AC.currentTime, o = AC.createOscillator(), g = AC.createGain();
+  o.type = type; o.frequency.setValueAtTime(freq, t);
+  if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(40, freq + slide), t + dur);
+  g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g).connect(AC.destination); o.start(t); o.stop(t + dur + 0.02);
+}
+function sndWall(v) { const now = performance.now(); if (now - lastWall < 40 || v < 60) return; lastWall = now; tone(260, 0.06, "triangle", clamp(v / 2500, 0.01, 0.1), -80); }
+function sndPutt(p) { tone(700, 0.05, "sine", 0.05 + p * 0.08, -300); }
+function sndCup() { [660, 880, 1320].forEach((f, i) => setTimeout(() => tone(f, 0.16, "sine", 0.08), i * 90)); }
+function sndSplash() { tone(500, 0.35, "sawtooth", 0.04, -420); }
+function sndWin() { [523, 659, 784, 1047].forEach((f, i) => setTimeout(() => tone(f, 0.22, "square", 0.05), i * 110)); }
+
+// ---------- ゲームの状態 ----------
+let scene = "title";        // title / play / over
+let mode = "solo", level = 1;
+let players = [];           // {name, cpu, scores:[]}
+let hi = 0, pi = 0;         // ホール番号、今打っている人
+let hole = HOLES[0], segs = segsOf(HOLES[0]), field = null;
+let ball = { x: 0, y: 0, vx: 0, vy: 0 }, lastPos = { x: 0, y: 0 };
+let strokes = 0, phase = "aim";  // aim / moving / sink / wait / cpuThink / cpuAim / holeEnd
+let shotEv = null, acc = 0, simT = 0, sinkT = 0;
+let msg = null, timers = [];
+let best = 0;
+try { best = parseInt(localStorage.getItem("kusoge010-best") || "0", 10) || 0; } catch (e) { }
+const LEVELS = ["弱い", "普通", "強い"];
+const curP = () => players[pi];
+const isCpuTurn = () => scene === "play" && players.length && curP().cpu;
+function say(text, color = "#fff", t = 1.6) { msg = { text, color, t, max: t }; }
+function later(sec, fn) { timers.push({ t: sec, fn }); }
+function medal(n) { if (n > 0 && window.Medal) Medal.add(n); }
+const total = p => p.scores.reduce((s, v) => s + (v || 0), 0);
+function scoreName(s, par) {
+  if (s === 1) return "ホールインワン！";
+  const d = s - par;
+  return d <= -2 ? "イーグル！" : d === -1 ? "バーディー！" : d === 0 ? "パー" : d === 1 ? "ボギー" : d === 2 ? "ダブルボギー" : `+${d}`;
+}
+
+function newGame(m, lv) {
+  audio();
+  mode = m; if (lv !== undefined) level = lv;
+  players = m === "solo" ? [{ name: "あなた", cpu: false, scores: [] }]
+    : m === "cpu" ? [{ name: "あなた", cpu: false, scores: [] }, { name: "CPU（" + LEVELS[level] + "）", cpu: true, scores: [] }]
+    : [{ name: "プレイヤー1", cpu: false, scores: [] }, { name: "プレイヤー2", cpu: false, scores: [] }];
+  scene = "play"; timers = [];
+  startHole(0);
+}
+function startHole(i) {
+  hi = i; hole = HOLES[i]; segs = segsOf(hole); field = null; pi = 0;
+  playerStart();
+}
+function playerStart() {
+  ball = { x: hole.start[0], y: hole.start[1], vx: 0, vy: 0 };
+  lastPos = { x: ball.x, y: ball.y };
+  strokes = 0;
+  say(players.length > 1 ? `HOLE ${hi + 1}　${curP().name}の番` : `HOLE ${hi + 1}「${hole.name}」パー${hole.par}`, "#fff", 1.6);
+  if (curP().cpu) { phase = "wait"; later(0.9, startCpu); } else phase = "aim";
+}
+
+function shoot(angle, power) {
+  power = clamp(power, 0.02, 1);
+  lastPos = { x: ball.x, y: ball.y };
+  ball.vx = Math.cos(angle) * power * MAX_V; ball.vy = Math.sin(angle) * power * MAX_V;
+  strokes++;
+  shotEv = { holed: false, water: false };
+  phase = "moving"; acc = 0; simT = 0;
+  sndPutt(power);
+}
+
+function afterStop() {
+  const ev = shotEv;
+  if (ev.holed) { sndCup(); phase = "sink"; sinkT = 0; ball.x = hole.cup[0]; ball.y = hole.cup[1]; return; }
+  if (ev.water) {
+    sndSplash(); strokes++;
+    ball.x = lastPos.x; ball.y = lastPos.y; ball.vx = ball.vy = 0;
+    say("池ポチャ！ 1打罰", "#8fd0ff", 1.6);
+  }
+  if (strokes >= MAX_STROKES) { say(`${MAX_STROKES}打で打ち切り`, "#ff9b8a", 1.6); phase = "wait"; later(1.4, () => playerDone(MAX_STROKES, false)); return; }
+  if (curP().cpu) { phase = "wait"; later(0.5, startCpu); } else phase = "aim";
+}
+
+function playerDone(score, holed) {
+  const p = curP();
+  p.scores[hi] = score;
+  if (holed) {
+    say(`${scoreName(score, hole.par)}　${score}打`, score <= hole.par ? "#ffe27a" : "#fff", 1.8);
+    if (!p.cpu) medal(3 + (score <= hole.par ? 2 : 0));   // 共通メダル：カップイン3枚、パー以下なら+2枚
+  }
+  if (pi + 1 < players.length) { phase = "wait"; later(1.6, () => { pi++; playerStart(); }); }
+  else { phase = "wait"; later(1.4, () => { phase = "holeEnd"; }); }
+}
+
+function nextHole() {
+  if (hi + 1 < HOLES.length) startHole(hi + 1);
+  else finish();
+}
+
+function finish() {
+  scene = "over"; phase = "wait";
+  const tots = players.map(total);
+  let newBest = false, humanWin = false, winner = -1;
+  if (mode === "solo") {
+    newBest = !best || tots[0] < best;
+    if (newBest) { best = tots[0]; try { localStorage.setItem("kusoge010-best", String(best)); } catch (e) { } }
+    humanWin = true;
+  } else {
+    winner = tots[0] < tots[1] ? 0 : tots[1] < tots[0] ? 1 : -1;
+    humanWin = mode === "pvp" ? winner !== -1 : winner === 0;
+  }
+  if (humanWin) { medal(10); sndWin(); }   // 共通メダル：完走（ひとり）または勝ちで10枚
+  overInfo = { tots, newBest, winner, humanWin };
+}
+let overInfo = null;
+
+// ---------- CPU ----------
+// CPUの狙いのズレ（角度はラジアン、強さは割合）。弱い・普通・強い
+let CPU_AERR = [0.12, 0.095, 0.07], CPU_PERR = [0.25, 0.21, 0.16];
+const cpu = { cands: [], i: 0, t: 0, angle: 0, power: 0, list: [] };
+function simulate(a, p) {
+  const st = { x: ball.x, y: ball.y, vx: Math.cos(a) * p * MAX_V, vy: Math.sin(a) * p * MAX_V };
+  const ev = { holed: false, water: false };
+  for (let i = 0; i < 2400; i++) if (!physStep(hole, segs, st, STEP, ev, false)) break;
+  return { st, ev };
+}
+function scoreSim(r) {
+  if (r.ev.holed) return 100000;
+  if (r.ev.water) return -20000;
+  return -field(r.st.x, r.st.y) - (hole.sand.some(z => inZone(z, r.st.x, r.st.y)) ? 30 : 0);
+}
+function startCpu() {
+  if (!field) field = buildField(hole, segs);
+  phase = "cpuThink"; cpu.t = 0; cpu.i = 0; cpu.list = [];
+  cpu.cands = [];
+  const PW = [0.06, 0.1, 0.15, 0.22, 0.3, 0.4, 0.5, 0.62, 0.76, 0.9, 1];
+  for (let k = 0; k < 120; k++) for (const p of PW) cpu.cands.push({ a: k / 120 * Math.PI * 2, p });
+  cpu.stage = 0;
+}
+function cpuThink(dt) {
+  cpu.t += dt;
+  const t0 = performance.now();
+  while (cpu.i < cpu.cands.length && performance.now() - t0 < 10) {
+    const c = cpu.cands[cpu.i++];
+    c.score = scoreSim(simulate(c.a, c.p));
+    cpu.list.push(c);
+  }
+  if (cpu.i < cpu.cands.length) return;
+  if (cpu.stage === 0) {
+    // 良さそうな打ち方のまわりを細かく探す
+    cpu.list.sort((a, b) => b.score - a.score);
+    const top = cpu.list.slice(0, 5); cpu.cands = []; cpu.i = 0;
+    for (const c of top) for (let da = -5; da <= 5; da++) for (const dp of [-0.04, -0.02, 0, 0.02, 0.04])
+      cpu.cands.push({ a: c.a + da * 0.005, p: clamp(c.p + dp, 0.03, 1) });
+    cpu.stage = 1; return;
+  }
+  if (cpu.t < 0.7) return;
+  cpu.list.sort((a, b) => b.score - a.score);
+  const aErr = CPU_AERR[level], pErr = CPU_PERR[level];
+  // 上位はズレても大丈夫かを確かめる
+  const d = Math.max(0.006, aErr);
+  const best6 = cpu.list.slice(0, 6);
+  for (const c of best6) c.rob = (c.score + scoreSim(simulate(c.a - d, c.p)) + scoreSim(simulate(c.a + d, c.p))) / 3;
+  best6.sort((a, b) => b.rob - a.rob);
+  const pick = best6[Math.floor(Math.random() * Math.min([3, 1, 1][level], best6.length))];
+  cpu.angle = pick.a + gauss() * aErr;
+  cpu.power = clamp(pick.p * (1 + gauss() * pErr), 0.03, 1);
+  cpu.t = 0; phase = "cpuAim";
+}
+
+// ---------- レイアウト（縦長ならコースを縦向きに） ----------
+function layout() {
+  const top = 58, bot = 56, pad = 8;
+  const aw = W - pad * 2, ah = H - top - bot;
+  const rot = ah > aw * 1.05;
+  const s = rot ? Math.min(aw / FH, ah / FW) : Math.min(aw / FW, ah / FH);
+  const tw = (rot ? FH : FW) * s, th = (rot ? FW : FH) * s;
+  L = { rot, s, top, bot, ox: (W - tw) / 2, oy: top + (ah - th) / 2 };
+}
+function toScreen(x, y) { return L.rot ? { x: L.ox + y * L.s, y: L.oy + (FW - x) * L.s } : { x: L.ox + x * L.s, y: L.oy + y * L.s }; }
+function toWorld(sx, sy) { return L.rot ? { x: FW - (sy - L.oy) / L.s, y: (sx - L.ox) / L.s } : { x: (sx - L.ox) / L.s, y: (sy - L.oy) / L.s }; }
+function worldTf() {
+  if (L.rot) ctx.setTransform(0, -L.s * DPR, L.s * DPR, 0, L.ox * DPR, (L.oy + FW * L.s) * DPR);
+  else ctx.setTransform(L.s * DPR, 0, 0, L.s * DPR, L.ox * DPR, L.oy * DPR);
+}
+function screenTf() { ctx.setTransform(DPR, 0, 0, DPR, 0, 0); }
+
+// ---------- 入力 ----------
+let drag = null, buttons = [];
+function evPos(e) { const r = cv.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
+function hitButton(p) { for (let i = buttons.length - 1; i >= 0; i--) { const b = buttons[i]; if (p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h) return b; } return null; }
+cv.addEventListener("pointerdown", e => {
+  audio();
+  const p = evPos(e), b = hitButton(p);
+  if (b) { b.act(); return; }
+  if (scene !== "play" || phase !== "aim" || isCpuTurn()) return;
+  cv.setPointerCapture && cv.setPointerCapture(e.pointerId);
+  drag = { sx: p.x, sy: p.y, angle: null, power: 0 };
+});
+cv.addEventListener("pointermove", e => {
+  if (!drag) return;
+  const p = evPos(e);
+  const a = toWorld(drag.sx, drag.sy), b = toWorld(p.x, p.y), len = hyp(p.x - drag.sx, p.y - drag.sy);
+  if (len > 6) drag.angle = Math.atan2(a.y - b.y, a.x - b.x);
+  drag.power = clamp(len / (Math.min(W, H) * 0.42), 0, 1);
+});
+function endDrag() {
+  if (!drag) return;
+  const d = drag; drag = null;
+  if (d.angle !== null && d.power > 0.03 && phase === "aim" && !isCpuTurn()) shoot(d.angle, d.power);
+}
+cv.addEventListener("pointerup", endDrag);
+cv.addEventListener("pointercancel", () => { drag = null; });
+addEventListener("keydown", e => { if (e.key === "m") mute = !mute; });
+
+// ---------- 更新 ----------
+function update(dt) {
+  if (msg) { msg.t -= dt; if (msg.t <= 0) msg = null; }
+  for (const t of timers) t.t -= dt;
+  const due = timers.filter(t => t.t <= 0); timers = timers.filter(t => t.t > 0);
+  for (const t of due) t.fn();
+  if (scene !== "play") return;
+  if (phase === "moving") {
+    acc += dt; simT += dt;
+    let moving = true;
+    while (acc >= STEP) { acc -= STEP; moving = physStep(hole, segs, ball, STEP, shotEv, true); if (!moving) break; }
+    if (simT > 20) { ball.vx = ball.vy = 0; moving = false; }
+    if (!moving) { acc = 0; afterStop(); }
+  } else if (phase === "sink") {
+    sinkT += dt;
+    if (sinkT > 0.5) { phase = "wait"; playerDone(strokes, true); }
+  } else if (phase === "cpuThink") cpuThink(dt);
+  else if (phase === "cpuAim") { cpu.t += dt; if (cpu.t > 1.0) shoot(cpu.angle, cpu.power); }
+}
+
+// ---------- 描画ヘルパー ----------
+function txt(s, x, y, size, color, align = "center", weight = 700) {
+  ctx.font = `${weight} ${size}px ${FONT}`; ctx.fillStyle = color; ctx.textAlign = align; ctx.textBaseline = "middle";
+  ctx.fillText(s, x, y);
+}
+function rr(x, y, w, h, r) { ctx.beginPath(); ctx.roundRect ? ctx.roundRect(x, y, w, h, r) : ctx.rect(x, y, w, h); }
+function button(x, y, w, h, label, opt, act) {
+  opt = opt || {};
+  rr(x, y, w, h, opt.r ?? 12);
+  ctx.fillStyle = opt.fill || "rgba(255,255,255,0.08)"; ctx.fill();
+  if (opt.stroke) { ctx.strokeStyle = opt.stroke; ctx.lineWidth = 1.5; ctx.stroke(); }
+  txt(label, x + w / 2, y + h / 2 + 1, opt.size || 16, opt.color || "#fff", "center", 800);
+  buttons.push({ x, y, w, h, act });
+}
+function polyPath(pts) { ctx.beginPath(); pts.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.closePath(); }
+function zonePath(z) { ctx.beginPath(); if (z.r !== undefined) ctx.arc(z.cx, z.cy, z.r, 0, Math.PI * 2); else ctx.rect(z.x, z.y, z.w, z.h); }
+
+function drawCourse(t) {
+  worldTf();
+  // 地面
+  ctx.fillStyle = "#1e3324"; ctx.fillRect(-60, -60, FW + 120, FH + 120);
+  // 外周の壁（太い線を描いてからグリーンを上に塗る）
+  polyPath(hole.outer); ctx.lineJoin = "round";
+  ctx.strokeStyle = "#0f1a12"; ctx.lineWidth = 34; ctx.stroke();
+  ctx.strokeStyle = "#c9b38a"; ctx.lineWidth = 26; ctx.stroke();
+  // グリーン（しま模様）
+  polyPath(hole.outer); ctx.fillStyle = "#3f9a52"; ctx.fill();
+  ctx.save(); polyPath(hole.outer); ctx.clip();
+  ctx.fillStyle = "rgba(255,255,255,0.045)";
+  for (let x = 0; x < FW; x += 80) ctx.fillRect(x, 0, 40, FH);
+  // 坂（流れる向きに矢印が動く）
+  for (const z of hole.slopes) {
+    ctx.save(); zonePath(z); ctx.clip();
+    ctx.fillStyle = "rgba(20,60,30,0.18)"; ctx.fillRect(z.x, z.y, z.w, z.h);
+    const off = (t * 28) % 50;
+    ctx.strokeStyle = "rgba(255,255,255,0.22)"; ctx.lineWidth = 3; ctx.lineCap = "round";
+    for (let x = z.x - 50; x < z.x + z.w + 50; x += 50) for (let y = z.y - 50; y < z.y + z.h + 50; y += 50) {
+      const cx = x + z.ax * off + 25, cy = y + z.ay * off + 25, px = -z.ay, py = z.ax;
+      ctx.beginPath();
+      ctx.moveTo(cx - z.ax * 7 + px * 9, cy - z.ay * 7 + py * 9); ctx.lineTo(cx + z.ax * 4, cy + z.ay * 4); ctx.lineTo(cx - z.ax * 7 - px * 9, cy - z.ay * 7 - py * 9);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+  // 砂
+  for (const z of hole.sand) {
+    zonePath(z); ctx.fillStyle = "#e1cc93"; ctx.fill();
+    ctx.save(); zonePath(z); ctx.clip(); ctx.fillStyle = "rgba(150,120,60,0.35)";
+    for (let i = 0; i < 70; i++) { const x = (z.r !== undefined ? z.cx - z.r : z.x) + ((i * 97) % 211) / 211 * (z.r !== undefined ? z.r * 2 : z.w), y = (z.r !== undefined ? z.cy - z.r : z.y) + ((i * 53) % 173) / 173 * (z.r !== undefined ? z.r * 2 : z.h); ctx.fillRect(x, y, 2.5, 2.5); }
+    ctx.restore();
+  }
+  // 池
+  for (const z of hole.water) {
+    zonePath(z); ctx.fillStyle = "#2f7fc4"; ctx.fill();
+    ctx.save(); zonePath(z); ctx.clip(); ctx.strokeStyle = "rgba(255,255,255,0.25)"; ctx.lineWidth = 2.5;
+    const bx = z.r !== undefined ? z.cx - z.r : z.x, by = z.r !== undefined ? z.cy - z.r : z.y, bw = z.r !== undefined ? z.r * 2 : z.w, bh = z.r !== undefined ? z.r * 2 : z.h;
+    for (let y = by + 14; y < by + bh; y += 26) { ctx.beginPath(); for (let x = bx; x <= bx + bw; x += 8) { const yy = y + Math.sin(x * 0.05 + t * 2) * 3; x === bx ? ctx.moveTo(x, yy) : ctx.lineTo(x, yy); } ctx.stroke(); }
+    ctx.restore();
+    zonePath(z); ctx.strokeStyle = "rgba(10,40,70,0.5)"; ctx.lineWidth = 3; ctx.stroke();
+  }
+  ctx.restore();
+  // 中の壁
+  for (const b of hole.blocks) {
+    polyPath(b); ctx.fillStyle = "#c9b38a"; ctx.fill();
+    ctx.strokeStyle = "#8a734c"; ctx.lineWidth = 3; ctx.stroke();
+  }
+  // ティー
+  ctx.fillStyle = "rgba(255,255,255,0.2)"; ctx.fillRect(hole.start[0] - 18, hole.start[1] - 18, 36, 36);
+  // カップ
+  ctx.beginPath(); ctx.arc(hole.cup[0], hole.cup[1], CUP_R + 3, 0, Math.PI * 2); ctx.fillStyle = "rgba(255,255,255,0.5)"; ctx.fill();
+  ctx.beginPath(); ctx.arc(hole.cup[0], hole.cup[1], CUP_R, 0, Math.PI * 2); ctx.fillStyle = "#10160f"; ctx.fill();
+}
+
+function drawBallFlag() {
+  screenTf();
+  const c = toScreen(hole.cup[0], hole.cup[1]), s = L.s;
+  // ボール
+  if (scene !== "title") {
+    const p = toScreen(ball.x, ball.y);
+    const sink = phase === "sink" ? clamp(1 - sinkT / 0.5, 0, 1) : (phase === "wait" && players.length && curP().scores[hi] !== undefined) ? 0 : 1;
+    if (sink > 0) {
+      const r = BR * s * (0.5 + 0.5 * sink);
+      ctx.beginPath(); ctx.arc(p.x + r * 0.25, p.y + r * 0.35, r, 0, Math.PI * 2); ctx.fillStyle = "rgba(0,0,0,0.3)"; ctx.fill();
+      const g = ctx.createRadialGradient(p.x - r * 0.35, p.y - r * 0.4, r * 0.1, p.x, p.y, r);
+      g.addColorStop(0, "#ffffff"); g.addColorStop(1, "#d8dde0");
+      ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2); ctx.fillStyle = g; ctx.fill();
+    }
+  }
+  // 旗
+  const ph = Math.max(26, 46 * s / 0.9);
+  ctx.strokeStyle = "#eee"; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(c.x, c.y); ctx.lineTo(c.x, c.y - ph); ctx.stroke();
+  ctx.fillStyle = "#e5483b"; ctx.beginPath(); ctx.moveTo(c.x, c.y - ph); ctx.lineTo(c.x + ph * 0.55, c.y - ph * 0.82); ctx.lineTo(c.x, c.y - ph * 0.64); ctx.closePath(); ctx.fill();
+}
+
+function drawAim(angle, power) {
+  worldTf();
+  const len = 30 + power * 260, dx = Math.cos(angle), dy = Math.sin(angle);
+  ctx.setLineDash([10, 8]); ctx.strokeStyle = "rgba(255,255,255,0.8)"; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(ball.x, ball.y); ctx.lineTo(ball.x + dx * len, ball.y + dy * len); ctx.stroke(); ctx.setLineDash([]);
+  const ex = ball.x + dx * len, ey = ball.y + dy * len, px = -dy, py = dx;
+  ctx.fillStyle = "rgba(255,255,255,0.85)"; ctx.beginPath();
+  ctx.moveTo(ex + dx * 12, ey + dy * 12); ctx.lineTo(ex + px * 8, ey + py * 8); ctx.lineTo(ex - px * 8, ey - py * 8); ctx.closePath(); ctx.fill();
+  // パター
+  const back = BR + 6 + power * 40;
+  const hx = ball.x - dx * back, hy = ball.y - dy * back;
+  ctx.strokeStyle = "#2b2f36"; ctx.lineWidth = 6; ctx.lineCap = "round";
+  ctx.beginPath(); ctx.moveTo(hx + px * 14, hy + py * 14); ctx.lineTo(hx - px * 14, hy - py * 14); ctx.stroke();
+  ctx.lineCap = "butt";
+}
+
+function drawPower(power) {
+  screenTf();
+  const w = Math.min(220, W * 0.5), x = W / 2 - w / 2, y = H - L.bot + 6;
+  rr(x, y, w, 8, 4); ctx.fillStyle = "rgba(255,255,255,0.15)"; ctx.fill();
+  rr(x, y, w * power, 8, 4); ctx.fillStyle = power > 0.75 ? "#ff7a5a" : power > 0.45 ? "#ffd166" : "#8be28b"; ctx.fill();
+}
+
+function drawHud() {
+  screenTf();
+  ctx.fillStyle = "rgba(0,0,0,0.35)"; ctx.fillRect(0, 0, W, L.top);
+  const narrow = W < 520;
+  txt(`HOLE ${hi + 1}/${HOLES.length}`, 14, L.top / 2 - 9, 12, "#b7d3bf", "left", 800);
+  txt(`パー${hole.par}　${strokes} 打`, 14, L.top / 2 + 10, narrow ? 15 : 17, "#fff", "left", 900);
+  if (players.length > 1) {
+    const w = narrow ? 92 : 132, x0 = W - 52 - (w + 6) * 2;
+    players.forEach((p, i) => {
+      const on = i === pi, x = x0 + i * (w + 6);
+      rr(x, 9, w, L.top - 18, 10);
+      ctx.fillStyle = on ? (i === 0 ? "rgba(127,209,255,0.22)" : "rgba(255,179,107,0.22)") : "rgba(255,255,255,0.05)"; ctx.fill();
+      if (on) { ctx.strokeStyle = i === 0 ? "#7fd1ff" : "#ffb36b"; ctx.lineWidth = 1.5; ctx.stroke(); }
+      txt(p.name, x + w / 2, L.top / 2 - 7, narrow ? 10 : 12, on ? "#fff" : "#9fb3a8", "center", 800);
+      txt(`合計 ${total(p)}`, x + w / 2, L.top / 2 + 10, narrow ? 11 : 13, on ? "#fff" : "#9fb3a8", "center", 800);
+    });
+  } else {
+    txt(`合計 ${total(players[0])}（パー${HOLES.reduce((s, h, i) => s + (players[0].scores[i] !== undefined ? h.par : 0), 0)}）`, W - 56, L.top / 2, narrow ? 12 : 13, "#b7d3bf", "right", 800);
+  }
+  button(W - 44, 10, 34, L.top - 20, "≡", { size: 18, r: 9 }, () => { if (confirm("タイトルに戻りますか？")) { scene = "title"; timers = []; } });
+  let hint = "";
+  if (phase === "cpuThink" || phase === "cpuAim" || (phase === "wait" && isCpuTurn())) hint = "CPUが考え中…";
+  else if (phase === "aim") hint = "どこでも引っ張って、離すと打つ（引っ張った長さが強さ）";
+  if (hint) txt(hint, W / 2, H - L.bot + 34, narrow ? 12 : 13, "#cfe3d6", "center", 700);
+}
+
+function drawMsg() {
+  if (!msg) return;
+  screenTf();
+  const a = Math.min(1, msg.t / 0.3, (msg.max - msg.t) / 0.15 + 0.2);
+  ctx.save(); ctx.globalAlpha = clamp(a, 0, 1);
+  const size = W < 520 ? 16 : 20;
+  ctx.font = `900 ${size}px ${FONT}`;
+  const w = ctx.measureText(msg.text).width + 36, y = L.top + 36;
+  rr(W / 2 - w / 2, y - 20, w, 40, 20); ctx.fillStyle = "rgba(10,20,14,0.82)"; ctx.fill();
+  txt(msg.text, W / 2, y + 1, size, msg.color, "center", 900);
+  ctx.restore();
+}
+
+// スコア表（ホール終了と結果で使う）
+function drawCard(x, y, w, upto) {
+  const narrow = w < 360, cw = (w - (narrow ? 76 : 96)) / (HOLES.length + 1), nameW = narrow ? 70 : 90;
+  const rowH = 26;
+  txt("HOLE", x + nameW / 2, y + rowH / 2, 11, "#9fb3a8", "center", 800);
+  HOLES.forEach((h, i) => txt(String(i + 1), x + nameW + cw * (i + 0.5), y + rowH / 2, 11, i === hi ? "#fff" : "#9fb3a8", "center", 800));
+  txt("計", x + nameW + cw * (HOLES.length + 0.5), y + rowH / 2, 11, "#9fb3a8", "center", 800);
+  y += rowH;
+  txt("パー", x + nameW / 2, y + rowH / 2, 12, "#9fb3a8", "center", 700);
+  HOLES.forEach((h, i) => txt(String(h.par), x + nameW + cw * (i + 0.5), y + rowH / 2, 12, "#9fb3a8", "center", 700));
+  txt(String(TOTAL_PAR), x + nameW + cw * (HOLES.length + 0.5), y + rowH / 2, 12, "#9fb3a8", "center", 700);
+  for (const p of players) {
+    y += rowH;
+    ctx.fillStyle = "rgba(255,255,255,0.05)"; ctx.fillRect(x, y + 2, w, rowH - 4);
+    txt(p.name.split("（")[0], x + nameW / 2, y + rowH / 2, narrow ? 11 : 12, "#fff", "center", 800);
+    HOLES.forEach((h, i) => {
+      if (i > upto || p.scores[i] === undefined) return;
+      const s = p.scores[i], col = s < h.par ? "#ffe27a" : s > h.par ? "#ff9b8a" : "#fff";
+      txt(String(s), x + nameW + cw * (i + 0.5), y + rowH / 2, 13, col, "center", 900);
+    });
+    txt(String(total(p)), x + nameW + cw * (HOLES.length + 0.5), y + rowH / 2, 13, "#fff", "center", 900);
+  }
+  return y + rowH;
+}
+
+function drawHoleEnd() {
+  screenTf();
+  ctx.fillStyle = "rgba(0,0,0,0.5)"; ctx.fillRect(0, 0, W, H);
+  buttons = [];
+  const pw = Math.min(460, W - 24), x = W / 2 - pw / 2, ph = 150 + players.length * 26 + 60, y = H / 2 - ph / 2;
+  rr(x, y, pw, ph, 18); ctx.fillStyle = "#16301f"; ctx.fill(); ctx.strokeStyle = "rgba(255,255,255,0.15)"; ctx.lineWidth = 1.5; ctx.stroke();
+  txt(`HOLE ${hi + 1}「${hole.name}」おわり`, W / 2, y + 30, 18, "#fff", "center", 900);
+  const yEnd = drawCard(x + 12, y + 52, pw - 24, hi);
+  const last = hi + 1 >= HOLES.length;
+  button(W / 2 - 110, yEnd + 14, 220, 48, last ? "結果を見る" : "次のホールへ", { fill: "#2e8b4f", size: 17 }, nextHole);
+}
+
+function drawPlay(t) {
+  drawCourse(t);
+  if (scene === "play") {
+    if (phase === "aim" && !isCpuTurn() && drag && drag.angle !== null) { drawAim(drag.angle, drag.power); drawPower(drag.power); }
+    if (phase === "cpuAim") drawAim(cpu.angle, cpu.power * Math.min(1, cpu.t / 0.7));
+  }
+  drawBallFlag();
+  buttons = [];
+  drawHud();
+  drawMsg();
+  if (scene === "play" && phase === "holeEnd") drawHoleEnd();
+}
+
+function drawTitle(t) {
+  screenTf();
+  const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, "#1f4a2c"); g.addColorStop(1, "#122218");
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  buttons = [];
+  const cx = W / 2, small = W < 520;
+  let y = Math.max(36, (H - 640) / 2);
+  // 飾り：カップに向かって転がるボール
+  const k = (t * 0.35) % 1, bx = cx - 110 + k * 200;
+  ctx.beginPath(); ctx.ellipse(cx + 100, y + 30, 16, 7, 0, 0, Math.PI * 2); ctx.fillStyle = "#0c120c"; ctx.fill();
+  ctx.strokeStyle = "#eee"; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(cx + 100, y + 30); ctx.lineTo(cx + 100, y - 18); ctx.stroke();
+  ctx.fillStyle = "#e5483b"; ctx.beginPath(); ctx.moveTo(cx + 100, y - 18); ctx.lineTo(cx + 126, y - 10); ctx.lineTo(cx + 100, y - 2); ctx.closePath(); ctx.fill();
+  if (k < 0.97) { ctx.beginPath(); ctx.arc(bx, y + 26, 8, 0, Math.PI * 2); ctx.fillStyle = "#fff"; ctx.fill(); }
+  y += 74;
+  txt("パターゴルフ", cx, y, small ? 34 : 44, "#fff", "center", 900); y += 34;
+  txt("9ホールを、少ない打数で回りきれ", cx, y, small ? 13 : 15, "#b7d3bf", "center", 700); y += 24;
+  const bw = Math.min(340, W - 32), x0 = cx - bw / 2;
+  const rules = [
+    "・どこでも引っ張って、離すと打つ（長さが強さ）",
+    "・少ない打数でカップに入れる。9ホールの合計で勝負",
+    "・壁ではね返る。坂は流れる、砂は止まりやすい",
+    "・池に落ちると1打罰で、打った場所からやり直し",
+    "・1ホール10打で打ち切り",
+  ];
+  const lh = small ? 20 : 21, rh = rules.length * lh + 22;
+  rr(x0, y, bw, rh, 12); ctx.fillStyle = "rgba(255,255,255,0.07)"; ctx.fill();
+  rules.forEach((r, i) => txt(r, x0 + 14, y + 11 + lh / 2 + i * lh, small ? 12 : 13, "#d6eadc", "left", 700));
+  y += rh + 18;
+  button(x0, y, bw, 52, "ひとりで回る", { fill: "#2e8b4f", size: 18 }, () => newGame("solo")); y += 62;
+  if (best) { txt(`ベスト ${best} 打（パー${TOTAL_PAR}）`, cx, y - 3, 12, "#b7d3bf"); y += 12; }
+  txt("CPUと対戦", cx, y + 8, 14, "#d6eadc", "center", 800); y += 22;
+  const w3 = (bw - 16) / 3;
+  LEVELS.forEach((lv, i) => button(x0 + i * (w3 + 8), y, w3, 48, lv, { fill: ["#2b6a8a", "#8a5a2b", "#8a2b3b"][i], size: 16 }, () => newGame("cpu", i)));
+  y += 60;
+  button(x0, y, bw, 50, "2人で対戦（同じ端末）", { stroke: "rgba(255,255,255,0.35)", size: 16 }, () => newGame("pvp")); y += 66;
+  button(cx - 70, y, 140, 38, "← 置き場へ", { fill: "transparent", color: "#b7d3bf", size: 14 }, () => { location.href = "../../"; });
+}
+
+function drawOver(t) {
+  drawPlay(t);
+  screenTf();
+  ctx.fillStyle = "rgba(0,0,0,0.55)"; ctx.fillRect(0, 0, W, H);
+  buttons = [];
+  const o = overInfo;
+  const pw = Math.min(460, W - 24), ph = 230 + players.length * 26 + 40, x = W / 2 - pw / 2, y = H / 2 - ph / 2;
+  rr(x, y, pw, ph, 18); ctx.fillStyle = "#16301f"; ctx.fill(); ctx.strokeStyle = "rgba(255,255,255,0.15)"; ctx.lineWidth = 1.5; ctx.stroke();
+  let head, sub, col = "#ffe27a";
+  const d = o.tots[0] - TOTAL_PAR, ds = d === 0 ? "イーブン" : d > 0 ? `+${d}` : String(d);
+  if (mode === "solo") { head = "ホールアウト！"; sub = `合計 ${o.tots[0]} 打（${ds}）${o.newBest ? "　ベスト更新！" : `　ベスト ${best} 打`}`; }
+  else if (o.winner === -1) { head = "引き分け"; sub = `どちらも ${o.tots[0]} 打`; col = "#fff"; }
+  else { head = mode === "cpu" ? (o.winner === 0 ? "あなたの勝ち！" : "CPUの勝ち…") : `${players[o.winner].name}の勝ち！`; sub = `${o.tots[0]} 打 対 ${o.tots[1]} 打`; if (mode === "cpu" && o.winner === 1) col = "#ff9b8a"; }
+  txt(head, W / 2, y + 40, 28, col, "center", 900);
+  txt(sub, W / 2, y + 76, 14, "#d6eadc", "center", 700);
+  if (o.humanWin) txt("+10 メダル", W / 2, y + 100, 13, "#f2b134", "center", 800);
+  hi = HOLES.length - 1;
+  const yEnd = drawCard(x + 12, y + 116, pw - 24, HOLES.length - 1);
+  const bw = (pw - 48) / 2;
+  button(x + 16, yEnd + 18, bw, 48, "もう一度", { fill: "#2e8b4f", size: 16 }, () => newGame(mode, level));
+  button(x + 32 + bw, yEnd + 18, bw, 48, "タイトルへ", { stroke: "rgba(255,255,255,0.35)", size: 16 }, () => { scene = "title"; });
+}
+
+// ---------- ループ ----------
+let lastT = performance.now();
+function frame(now) {
+  requestAnimationFrame(frame);
+  const dt = Math.min(0.05, (now - lastT) / 1000); lastT = now;
+  update(dt);
+  screenTf(); ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = "#16241a"; ctx.fillRect(0, 0, W, H);
+  const t = now / 1000;
+  if (scene === "title") drawTitle(t);
+  else if (scene === "over") drawOver(t);
+  else drawPlay(t);
+}
+resize();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
