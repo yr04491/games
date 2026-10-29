@@ -1,0 +1,1140 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>ぐるぐるガーディアン</title>
+<style>
+  :root{--bg:#10161f;--panel:#1b2533;--panel2:#243246;--line:#34465e;--text:#eef3f8;--sub:#9fb0c3;
+    --gold:#f2b134;--teal:#4fd1c5;--red:#ff5d5d;--good:#6ee07f}
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--text);overflow:hidden;touch-action:none;
+    font-family:system-ui,-apple-system,"Hiragino Sans","Noto Sans CJK JP","Noto Sans JP",sans-serif;
+    -webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
+  canvas{display:block;position:fixed;inset:0;width:100vw;height:100vh}
+  button{font:inherit;color:inherit;border:0;cursor:pointer;background:none}
+  button:focus-visible{outline:3px solid var(--gold);outline-offset:2px}
+  .screen{position:fixed;inset:0;display:none;flex-direction:column;z-index:10;
+    padding:max(16px,env(safe-area-inset-top)) max(16px,env(safe-area-inset-right)) max(16px,env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left))}
+  .screen.on{display:flex}
+  .big{background:var(--gold);color:#2b1a00;font-weight:900;font-size:18px;padding:14px 46px;border-radius:999px;box-shadow:0 6px 0 #a8741a}
+  .big:active{transform:translateY(3px);box-shadow:0 3px 0 #a8741a}
+  .ghost{color:var(--sub);font-weight:700;font-size:14px;padding:10px 18px;border-radius:999px;border:1px solid var(--line)}
+  /* タイトル */
+  #title{align-items:center;justify-content:center;text-align:center;
+    background:radial-gradient(110% 70% at 50% 10%,#23405a 0%,var(--bg) 70%)}
+  .spin{position:relative;width:150px;height:150px;margin-bottom:20px}
+  .spin .hero{position:absolute;left:50%;top:50%;width:52px;height:52px;margin:-26px;border-radius:50%;
+    background:radial-gradient(circle at 35% 30%,#9fd3ff,#3a7bd5);border:3px solid #fff;z-index:2}
+  .spin .hero::before,.spin .hero::after{content:"";position:absolute;top:19px;width:8px;height:11px;border-radius:50%;background:#14202c}
+  .spin .hero::before{left:13px}.spin .hero::after{right:13px}
+  .spin .arm{position:absolute;inset:0;animation:rot 1.1s linear infinite}
+  .spin .arm::before{content:"";position:absolute;left:50%;top:6px;width:10px;height:58px;margin-left:-5px;border-radius:5px 5px 2px 2px;
+    background:linear-gradient(#ffffff,#b9c7d6);box-shadow:0 0 12px rgba(160,220,255,.8)}
+  .spin .arm::after{content:"";position:absolute;left:50%;top:58px;width:26px;height:6px;margin-left:-13px;border-radius:3px;background:var(--gold)}
+  .spin .trail{position:absolute;inset:0;border-radius:50%;border:4px solid rgba(160,220,255,.25)}
+  @keyframes rot{to{transform:rotate(360deg)}}
+  #title h1{font-size:clamp(32px,9vw,60px);margin:0;font-weight:900;line-height:1.1;text-shadow:0 4px 0 #050a10}
+  #title h1 span{color:var(--gold)}
+  #title p{color:var(--sub);margin:12px 0 30px;font-size:15px}
+  /* ステージ選択 */
+  #select{background:var(--bg);align-items:center;overflow-y:auto;touch-action:pan-y}
+  .wrap{max-width:560px;width:100%;display:flex;flex-direction:column;gap:12px}
+  .head{display:flex;align-items:center;gap:10px}
+  .head h2{flex:1;margin:0;font-size:20px;font-weight:900}
+  .stage{display:flex;align-items:center;gap:14px;text-align:left;background:var(--panel);border:1px solid var(--line);
+    border-radius:16px;padding:12px 14px;width:100%}
+  .stage:not(:disabled):active{transform:scale(.98)}
+  .stage:disabled{opacity:.45;cursor:default}
+  .sicon{width:50px;height:50px;border-radius:14px;flex:none;display:grid;place-items:center;font-weight:900;font-size:20px;color:#fff}
+  .sbody{flex:1;min-width:0}
+  .sbody small{display:block;color:var(--sub);font-size:12px;font-weight:700}
+  .sbody strong{display:block;font-size:17px;margin:1px 0}
+  .sbody em{font-style:normal;color:var(--sub);font-size:13px}
+  .clear{color:var(--gold);font-weight:900;font-size:12px;white-space:nowrap}
+  .how{background:var(--panel);border-radius:16px;padding:14px 16px;font-size:14px;line-height:1.7;color:var(--sub)}
+  .how b{color:var(--text)}
+  .how ul{margin:6px 0 0;padding-left:1.2em}
+  /* ゲーム中の下のバー */
+  #bar{position:fixed;left:0;right:0;bottom:0;z-index:4;display:none;flex-direction:column;gap:8px;
+    padding:8px max(12px,env(safe-area-inset-right)) calc(10px + env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left))}
+  #bar.on{display:flex}
+  .row{display:flex;gap:8px;align-items:stretch;max-width:520px;width:100%;margin:0 auto}
+  #info{flex:1;min-width:0;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:7px 10px;font-size:12px;
+    color:var(--sub);display:flex;align-items:center;gap:8px;min-height:44px}
+  #info .txt{flex:1;min-width:0;line-height:1.4}
+  #info b{color:var(--text);font-size:13px}
+  #sellBtn{flex:none;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:6px 10px;font-size:12px;font-weight:800;color:var(--text)}
+  .coin{display:flex;align-items:center;gap:6px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:0 12px;
+    font-weight:900;font-size:16px;color:var(--gold);font-variant-numeric:tabular-nums;min-width:92px}
+  .coin i{width:16px;height:16px;border-radius:50%;background:radial-gradient(circle at 35% 35%,#fff3b0,#f2b134 50%,#b07a12);flex:none}
+  #summonBtn{flex:1;background:var(--gold);color:#2b1a00;border-radius:12px;font-weight:900;font-size:16px;padding:10px 8px;
+    box-shadow:0 4px 0 #a8741a;line-height:1.15}
+  #summonBtn small{display:block;font-size:11px;font-weight:800;opacity:.8}
+  #summonBtn:disabled{background:#5b5340;color:#a99c80;box-shadow:0 4px 0 #3b3528}
+  #summonBtn:not(:disabled):active{transform:translateY(2px);box-shadow:0 2px 0 #a8741a}
+  #speedBtn{width:56px;background:var(--panel);border:1px solid var(--line);border-radius:12px;font-weight:900;font-size:15px}
+  #speedBtn.fast{color:var(--teal);border-color:var(--teal)}
+  #menuBtn{position:fixed;z-index:5;top:calc(10px + env(safe-area-inset-top));right:calc(12px + env(safe-area-inset-right));
+    width:40px;height:40px;border-radius:12px;background:var(--panel);border:1px solid var(--line);font-size:16px;font-weight:900;display:none}
+  #menuBtn.on{display:block}
+  #toast{position:fixed;left:50%;top:calc(76px + env(safe-area-inset-top));transform:translateX(-50%);z-index:6;background:rgba(16,22,31,.92);
+    border:1px solid var(--line);border-radius:999px;padding:8px 16px;font-size:13px;font-weight:800;opacity:0;transition:opacity .2s;pointer-events:none;white-space:nowrap}
+  #toast.on{opacity:1}
+  /* モーダル */
+  .modal{align-items:center;justify-content:center;background:rgba(6,9,14,.8)}
+  .box{background:var(--panel);border:1px solid var(--line);border-radius:20px;padding:22px 18px;width:min(380px,100%);
+    display:flex;flex-direction:column;gap:12px;text-align:center;max-height:100%;overflow-y:auto}
+  .box h3{margin:0;font-size:22px;font-weight:900}
+  .box p{margin:0;color:var(--sub);font-size:14px}
+  .opt{display:flex;gap:12px;align-items:center;text-align:left;background:var(--panel2);border:2px solid var(--line);border-radius:14px;padding:12px}
+  .opt:active{transform:scale(.98)}
+  .opt i{width:42px;height:42px;border-radius:50%;flex:none;border:3px solid #fff;display:grid;place-items:center;font-style:normal;font-weight:900;font-size:16px;color:#14202c}
+  .opt b{display:block;font-size:16px}
+  .opt span{display:block;font-size:12px;color:var(--sub);line-height:1.5}
+  .stat{display:flex;justify-content:space-between;background:var(--panel2);border-radius:12px;padding:10px 14px;font-weight:800;font-variant-numeric:tabular-nums}
+  .stat span{color:var(--sub);font-weight:700}
+  @media (prefers-reduced-motion:reduce){.spin .arm{animation:none}}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<button id="menuBtn" aria-label="メニュー">II</button>
+<div id="toast"></div>
+
+<div id="bar">
+  <div class="row">
+    <div id="info"><div class="txt" id="infoTxt"></div><button id="sellBtn" hidden>売る</button></div>
+  </div>
+  <div class="row">
+    <div class="coin"><i></i><span id="coinTxt">0</span></div>
+    <button id="summonBtn">召喚<small id="costTxt">20コイン</small></button>
+    <button id="speedBtn" aria-label="速度">x1</button>
+  </div>
+</div>
+
+<section class="screen on" id="title">
+  <div class="spin"><div class="trail"></div><div class="arm"></div><div class="hero"></div></div>
+  <h1>ぐるぐる<br><span>ガーディアン</span></h1>
+  <p>冒険者を雇い、合成して、峠道を守りぬけ</p>
+  <button class="big" id="startBtn">あそぶ</button>
+</section>
+
+<section class="screen" id="select">
+  <div class="wrap">
+    <div class="head"><h2>ステージをえらぶ</h2><button class="ghost" id="backTitle">もどる</button></div>
+    <div id="stageList" class="wrap" style="gap:10px"></div>
+    <div class="how">
+      <b>あそびかた</b>
+      <ul>
+        <li><b>召喚</b>でランダムな冒険者がマスに出る。剣・槍は武器を回して斬り、魔法は範囲に魔法を落とし、弓は遠くを撃つ</li>
+        <li>射程は 剣 &lt; 槍 &lt; 魔法 &lt; 弓、威力は 剣 &gt; 槍 &gt; 魔法 &gt; 弓。魔法はレアで、炎・氷・雷の効果つき</li>
+        <li>同じ冒険者を<b>ドラッグして重ねる</b>と合成して上のジョブに。分かれ道では進化先を選べる</li>
+        <li>敵は道を回り続ける。場の敵が<b>上限</b>に達したら負け</li>
+        <li>10ウェーブごとにボス。時間内に倒せないと負け。30ウェーブでクリア</li>
+        <li>11ウェーブ目から、強い敵が冒険者をしびれさせてくる（しばらく止まる）</li>
+        <li>5ウェーブごとに強化を1つ選べる。右下のボタンで最大5倍速</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section class="screen modal" id="choose">
+  <div class="box">
+    <h3 id="chTitle">進化先をえらぶ</h3>
+    <p id="chSub"></p>
+    <div id="chList" style="display:flex;flex-direction:column;gap:10px"></div>
+    <button class="ghost" id="chCancel">合成しない</button>
+  </div>
+</section>
+
+<section class="screen modal" id="pause">
+  <div class="box">
+    <h3>ポーズ</h3>
+    <button class="big" id="resumeBtn">つづける</button>
+    <button class="ghost" id="retireBtn">ステージをやめる</button>
+  </div>
+</section>
+
+<section class="screen modal" id="result">
+  <div class="box">
+    <h3 id="resTitle">クリア！</h3>
+    <p id="resSub"></p>
+    <div class="stat"><span>到達ウェーブ</span><b id="resWave">0</b></div>
+    <div class="stat"><span>倒した敵</span><b id="resKill">0</b></div>
+    <button class="big" id="retryBtn">もう一度</button>
+    <button class="ghost" id="toSelect">ステージ選択へ</button>
+  </div>
+</section>
+
+<script>
+"use strict";
+// ============================================================
+//  ぐるぐるガーディアン — 道のそばで武器を回して守る召喚ディフェンス
+//  召喚 → 合成でジョブ進化（分かれ道は自分で選ぶ）→ 30ウェーブ耐えればクリア
+//  画像ファイルなし：すべてコードで描画、効果音もコードで生成
+// ============================================================
+const cv = document.getElementById("c");
+const ctx = cv.getContext("2d");
+const FONT = 'system-ui,-apple-system,"Hiragino Sans","Noto Sans CJK JP","Noto Sans JP",sans-serif';
+const TAU = Math.PI * 2;
+const CELL = 60, COLS = 6, ROWS = 9, FW = CELL * COLS, FH = CELL * ROWS;
+const CAP = 50;
+let BOSS_MUL = [8, 9], WAVE_BONUS = 10, DMG_MUL = 2.2, HP_GROW = 1.15;              // 場の敵の上限
+const WAVES = 30;
+const TOP = 70;
+let BOT = 130;
+
+let W = 0, H = 0, DPR = 1, S = 1, FX = 0, FY = 0, SAT = 0;
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = innerWidth; H = innerHeight;
+  cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
+  const bar = document.getElementById("bar");
+  BOT = bar && bar.classList.contains("on") ? bar.offsetHeight : 130;
+  const availW = W - 16, availH = H - TOP - SAT - BOT - 8;
+  S = Math.max(0.3, Math.min(availW / FW, availH / FH));
+  FX = (W - FW * S) / 2;
+  FY = TOP + SAT + Math.max(0, (availH - FH * S) / 2);
+}
+addEventListener("resize", resize);
+
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+const rand = (a, b) => a + Math.random() * (b - a);
+const pick = a => a[Math.floor(Math.random() * a.length)];
+const shuffle = a => { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
+const modT = a => ((a % TAU) + TAU) % TAU;
+
+// ---------- 保存 ----------
+const SAVE_KEY = "guruguru-guardian-v1";
+let save = { cleared: {} };
+try { const s = JSON.parse(localStorage.getItem(SAVE_KEY)); if (s && s.cleared) save = s; } catch (e) {}
+function writeSave() { try { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch (e) {} }
+
+// ---------- 効果音 ----------
+let AC = null;
+function audio() {
+  if (!AC) { try { AC = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {} }
+  if (AC && AC.state === "suspended") AC.resume();
+}
+function tone(f, dur, type = "square", vol = 0.06, slide = 0, delay = 0) {
+  if (!AC) return;
+  const t = AC.currentTime + delay, o = AC.createOscillator(), g = AC.createGain();
+  o.type = type; o.frequency.setValueAtTime(f, t);
+  if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(30, f + slide), t + dur);
+  g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g).connect(AC.destination); o.start(t); o.stop(t + dur + 0.02);
+}
+function noise(dur, vol = 0.1) {
+  if (!AC) return;
+  const n = Math.floor(AC.sampleRate * dur), b = AC.createBuffer(1, n, AC.sampleRate), d = b.getChannelData(0);
+  for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / n);
+  const s = AC.createBufferSource(), g = AC.createGain(); s.buffer = b; g.gain.value = vol;
+  s.connect(g).connect(AC.destination); s.start();
+}
+const lastSfx = {};
+function limited(k, ms) { const n = performance.now(); if (n - (lastSfx[k] || 0) < ms) return false; lastSfx[k] = n; return true; }
+const SFX = {
+  hit() { if (limited("hit", 60)) tone(rand(700, 900), 0.04, "square", 0.025); },
+  kill() { if (limited("kill", 70)) tone(420, 0.08, "triangle", 0.05, -200); },
+  summon() { tone(520, 0.08, "square", 0.05); tone(780, 0.12, "square", 0.05, 0, 0.07); },
+  merge() { [523, 659, 784, 1047].forEach((f, i) => tone(f, 0.12, "square", 0.05, 0, i * 0.05)); },
+  boss() { tone(110, 0.6, "sawtooth", 0.09, -40); noise(0.4, 0.08); },
+  wave() { tone(660, 0.1, "triangle", 0.05); },
+  buy() { tone(900, 0.06, "square", 0.04); },
+  bad() { tone(200, 0.15, "square", 0.05, -60); },
+  clear() { [523, 659, 784, 1047, 1319].forEach((f, i) => tone(f, 0.22, "square", 0.06, 0, i * 0.11)); },
+  lose() { [392, 330, 262, 196].forEach((f, i) => tone(f, 0.28, "triangle", 0.07, 0, i * 0.16)); },
+  tap() { tone(880, 0.04, "square", 0.03); },
+};
+
+// ---------- ジョブ ----------
+// line: sword / spear / mage / bow
+// 回転系：R=刃の届く距離, n=刃の数, spd=回転速度(rad/s)。弓：range, rate=発射間隔
+const LINE = {
+  sword: { name: "剣", c1: "#3a7bd5", c2: "#9fd3ff" },
+  spear: { name: "槍", c1: "#c0392b", c2: "#ff9f8a" },
+  mage:  { name: "魔法", c1: "#7b4fd0", c2: "#d4b8ff" },
+  bow:   { name: "弓", c1: "#2e9e5b", c2: "#a6f0b8" },
+};
+// 射程：剣 < 槍 < 魔法 < 弓。威力：剣 > 槍 > 魔法 > 弓（狙撃手だけは一撃が重い例外）
+// 魔法は「範囲内の敵全員に一定間隔で魔法が落ちる」。見習いと魔法使いは炎・氷・雷のどれかがランダムで付く
+const JOBS = {
+  sword1: { line: "sword", rank: 1, name: "見習い剣士", dmg: 14, R: 65, n: 1, spd: 4, next: ["sword2"] },
+  sword2: { line: "sword", rank: 2, name: "剣士", dmg: 32, R: 67, n: 1, spd: 4.5, next: ["sword3a", "sword3b"] },
+  sword3a: { line: "sword", rank: 3, name: "剣聖", dmg: 70, R: 70, n: 2, spd: 5, next: ["sword4a"], desc: "2本の剣を速く回す攻撃型" },
+  sword4a: { line: "sword", rank: 4, name: "剣神", dmg: 160, R: 75, n: 2, spd: 5.5, next: [], desc: "最強の剣で切り刻む" },
+  sword3b: { line: "sword", rank: 3, name: "騎士", dmg: 62, R: 68, n: 1, spd: 4.5, slow: [0.55, 1.0], next: ["sword4b"], desc: "斬った敵を遅くする守り型" },
+  sword4b: { line: "sword", rank: 4, name: "聖騎士", dmg: 145, R: 74, n: 2, spd: 4.5, slow: [0.4, 1.4], next: [], desc: "敵を大きく足止めする" },
+  spear1: { line: "spear", rank: 1, name: "見習い槍兵", dmg: 11, R: 85, n: 1, spd: 3, next: ["spear2"] },
+  spear2: { line: "spear", rank: 2, name: "槍使い", dmg: 25, R: 88, n: 1, spd: 3.2, next: ["spear3a", "spear3b"] },
+  spear3a: { line: "spear", rank: 3, name: "竜騎士", dmg: 60, R: 94, n: 1, spd: 3.5, next: ["spear4a"], desc: "長い槍で一撃が重い" },
+  spear4a: { line: "spear", rank: 4, name: "竜王", dmg: 125, R: 100, n: 1, spd: 3.8, next: [], desc: "とどく範囲も一撃も槍で最大" },
+  spear3b: { line: "spear", rank: 3, name: "戦斧兵", dmg: 50, R: 90, n: 2, spd: 3.2, next: ["spear4b"], desc: "両刃の斧で広くなぎ払う" },
+  spear4b: { line: "spear", rank: 4, name: "将軍", dmg: 110, R: 98, n: 2, spd: 3.5, next: [], desc: "大きな斧で広範囲をなぎ払う" },
+  mage1: { line: "mage", rank: 1, name: "見習い魔法使い", dmg: 7, R: 110, rate: 1.8, next: ["mage2"] },
+  mage2: { line: "mage", rank: 2, name: "魔法使い", dmg: 16, R: 115, rate: 1.7, next: ["mage3a", "mage3b"] },
+  mage3a: { line: "mage", rank: 3, name: "炎の魔導士", dmg: 35, R: 122, rate: 1.6, el: "fire", next: ["mage4a"], desc: "範囲の敵を燃やし続ける" },
+  mage4a: { line: "mage", rank: 4, name: "大魔導士", dmg: 80, R: 130, rate: 1.5, el: "fire", next: [], desc: "大きな炎で焼きつくす" },
+  mage3b: { line: "mage", rank: 3, name: "氷の魔導士", dmg: 32, R: 122, rate: 1.6, el: "ice", next: ["mage4b"], desc: "範囲の敵を遅くする" },
+  mage4b: { line: "mage", rank: 4, name: "氷帝", dmg: 75, R: 130, rate: 1.5, el: "ice", next: [], desc: "範囲の敵をほぼ凍らせる" },
+  bow1: { line: "bow", rank: 1, name: "見習い弓兵", dmg: 5, range: 150, rate: 0.9, next: ["bow2"] },
+  bow2: { line: "bow", rank: 2, name: "弓使い", dmg: 12, range: 160, rate: 0.85, next: ["bow3a", "bow3b"] },
+  bow3a: { line: "bow", rank: 3, name: "狙撃手", dmg: 55, range: 200, rate: 1.5, snipe: true, next: ["bow4a"], desc: "HPの多い敵を狙う。一撃が重い" },
+  bow4a: { line: "bow", rank: 4, name: "魔弾の射手", dmg: 140, range: 200, rate: 1.4, snipe: true, next: [], desc: "ボスにも強い必殺の一撃" },
+  bow3b: { line: "bow", rank: 3, name: "連射手", dmg: 12, range: 170, rate: 0.35, next: ["bow4b"], desc: "矢をすばやく連射する" },
+  bow4b: { line: "bow", rank: 4, name: "嵐の射手", dmg: 28, range: 180, rate: 0.3, multi: 2, next: [], desc: "2体に同時に矢の雨" },
+};
+for (const k in JOBS) JOBS[k].id = k;
+const BASE_JOBS = ["sword1", "spear1", "mage1", "bow1"];
+const BASE_RATE = [0.3, 0.3, 0.1, 0.3];       // 剣・槍・魔法・弓の出やすさ
+function rollBase() { let r = Math.random(); for (let i = 0; i < 4; i++) { if ((r -= BASE_RATE[i]) < 0) return BASE_JOBS[i]; } return BASE_JOBS[0]; }
+const EL = { fire: { name: "炎", c1: "#ffb347", c2: "#ff4d1a", hat: "#c0392b" }, ice: { name: "氷", c1: "#dff4ff", c2: "#5ab0e6", hat: "#3b8fd0" },
+  thunder: { name: "雷", c1: "#fff3a8", c2: "#f0b400", hat: "#8a6d00" } };
+const RANK_COL = ["", "#b8c4d0", "#6ee07f", "#56a8ff", "#f2b134"];
+
+// ---------- ステージ ----------
+// 道は [列, 行] の曲がり角で決める
+const STAGES = [
+  { name: "はじまりの草原", level: "★☆☆☆☆", hp: 0.9, kinds: ["slime", "goblin"], boss: ["kingslime", "キングスライム"],
+    col: "#3f9b4f", ground: "#2f6b3a", g2: "#2a6035", path: "#b98d58", pathE: "#8a6337", tile: "#3a7a46", tileE: "#4d9158",
+    pts: [[0, 0], [5, 0], [5, 2], [0, 2], [0, 4], [5, 4], [5, 6], [0, 6], [0, 8], [5, 8]] },
+  { name: "きりの森", level: "★★☆☆☆", hp: 1.38, kinds: ["goblin", "bat"], boss: ["ogre", "森のオーガ"],
+    col: "#2d7f78", ground: "#1d4a45", g2: "#1a423e", path: "#7d6a4f", pathE: "#5a4a35", tile: "#24605a", tileE: "#357a72",
+    pts: [[0, 0], [0, 8], [2, 8], [2, 0], [4, 0], [4, 8], [5, 8], [5, 0]] },
+  { name: "さばくの遺跡", level: "★★★☆☆", hp: 1.1, kinds: ["skull", "golem"], boss: ["pharaoh", "ファラオ"],
+    col: "#c98a2e", ground: "#a8793a", g2: "#9c6f34", path: "#e2c38a", pathE: "#b8975a", tile: "#8f6630", tileE: "#a97c40",
+    pts: [[0, 0], [5, 0], [5, 3], [0, 3], [0, 6], [5, 6], [5, 8], [0, 8]] },
+  { name: "こおりの谷", level: "★★★★☆", hp: 1.25, kinds: ["bat", "golem"], boss: ["icegiant", "氷の巨人"],
+    col: "#4aa3d8", ground: "#5c84a6", g2: "#55799a", path: "#dbeefa", pathE: "#a9c9df", tile: "#4b7194", tileE: "#6a90b2",
+    pts: [[0, 1], [4, 1], [4, 4], [1, 4], [1, 7], [5, 7], [5, 0]] },
+  { name: "魔王城", level: "★★★★★", hp: 1.05, kinds: ["skull", "bat", "golem"], boss: ["demon", "魔王"],
+    col: "#8e3fc9", ground: "#2a1f3d", g2: "#251b37", path: "#5a4870", pathE: "#3e3150", tile: "#3a2c52", tileE: "#54406f",
+    pts: [[0, 0], [5, 0], [5, 8], [0, 8], [0, 2], [3, 2], [3, 6], [2, 6]] },
+];
+const EKIND = {
+  slime: { c1: "#7ef08f", c2: "#2fb35a", shape: "blob" },
+  goblin: { c1: "#a6d65a", c2: "#5d8a25", shape: "ears" },
+  bat: { c1: "#b58cff", c2: "#6a3fc4", shape: "wings" },
+  skull: { c1: "#f4efe2", c2: "#b9b09a", shape: "skull" },
+  golem: { c1: "#b7aa98", c2: "#6e6455", shape: "block" },
+  kingslime: { c1: "#9af5a8", c2: "#2fb35a", shape: "blob" },
+  ogre: { c1: "#8fbf5a", c2: "#476b20", shape: "ears" },
+  pharaoh: { c1: "#f8e7b8", c2: "#c9a24a", shape: "skull" },
+  icegiant: { c1: "#d8f1ff", c2: "#6aaed6", shape: "block" },
+  demon: { c1: "#e0607e", c2: "#7a1d3a", shape: "horns" },
+};
+
+function buildPath(st) {
+  const pts = st.pts.map(([c, r]) => ({ x: c * CELL + CELL / 2, y: r * CELL + CELL / 2 }));
+  const cells = new Set();
+  for (let i = 0; i < st.pts.length - 1; i++) {
+    const [c0, r0] = st.pts[i], [c1, r1] = st.pts[i + 1];
+    const dc = Math.sign(c1 - c0), dr = Math.sign(r1 - r0);
+    let c = c0, r = r0; cells.add(c + "," + r);
+    while (c !== c1 || r !== r1) { c += dc; r += dr; cells.add(c + "," + r); }
+  }
+  const segs = []; let L = 0;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = pts[i], b = pts[i + 1], len = Math.hypot(b.x - a.x, b.y - a.y);
+    segs.push({ a, b, len, s: L }); L += len;
+  }
+  return { pts, cells, segs, L };
+}
+function posAt(path, d) {
+  for (const s of path.segs) if (d <= s.s + s.len) {
+    const t = (d - s.s) / s.len; return { x: s.a.x + (s.b.x - s.a.x) * t, y: s.a.y + (s.b.y - s.a.y) * t };
+  }
+  const e = path.pts[path.pts.length - 1]; return { x: e.x, y: e.y };
+}
+
+// ---------- 強化（5ウェーブごと） ----------
+const BUFFS = [
+  { id: "sword", name: "剣の攻撃 +30%", desc: "剣士の系統が強くなる", col: LINE.sword.c2, apply: b => b.line.sword += 0.3 },
+  { id: "spear", name: "槍の攻撃 +30%", desc: "槍兵の系統が強くなる", col: LINE.spear.c2, apply: b => b.line.spear += 0.3 },
+  { id: "mage", name: "魔法の攻撃 +30%", desc: "魔法使いの系統が強くなる", col: LINE.mage.c2, apply: b => b.line.mage += 0.3 },
+  { id: "bow", name: "弓の攻撃 +30%", desc: "弓兵の系統が強くなる", col: LINE.bow.c2, apply: b => b.line.bow += 0.3 },
+  { id: "spin", name: "回転速度 +20%", desc: "剣・槍・魔法が速く回る", col: "#9fd3ff", apply: b => b.spin += 0.2 },
+  { id: "rate", name: "弓の連射 +25%", desc: "矢を撃つ間隔が短くなる", col: "#a6f0b8", apply: b => b.rate += 0.25 },
+  { id: "all", name: "全員の攻撃 +15%", desc: "すべての冒険者が強くなる", col: "#f2b134", apply: b => b.all += 0.15 },
+  { id: "slow", name: "敵の足 -12%", desc: "敵の移動が遅くなる", col: "#4fd1c5", apply: b => b.eSpd *= 0.88 },
+  { id: "gold", name: "撃破コイン +30%", desc: "敵を倒したときのコインが増える", col: "#ffe08a", apply: b => b.coin += 0.3 },
+  { id: "cheap", name: "召喚コスト -20%", desc: "召喚が安くなる", col: "#ffd27a", apply: b => b.cost *= 0.8 },
+  { id: "coin", name: "コイン +150", desc: "いますぐコインをもらう", col: "#ffe08a", apply: () => { G.coins += 150; } },
+  { id: "twin", name: "見習いを2人雇う", desc: "ランダムな見習いがすぐ2人来る", col: "#b8c4d0", apply: () => { summonFree(); summonFree(); } },
+];
+
+// ---------- 状態 ----------
+let G = null, stageIdx = 0, paused = false, speed = 1, uid = 0;
+const fx = { parts: [], texts: [], arrows: [], rings: [], bolts: [], eshots: [] };
+let banner = null;
+
+function newGame(si) {
+  stageIdx = si;
+  for (const k in fx) fx[k].length = 0;
+  const st = STAGES[si];
+  G = {
+    st, path: buildPath(st), heroes: [], enemies: [],
+    coins: 100, summons: 0, wave: 0, waveT: 0, spawnLeft: 0, spawnT: 0, boss: null,
+    kills: 0, t: 0, state: "play", sel: null, endT: 0,
+    buff: { line: { sword: 1, spear: 1, mage: 1, bow: 1 }, spin: 1, rate: 1, all: 1, eSpd: 1, coin: 1, cost: 1 },
+  };
+  G.slots = [];
+  for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) if (!G.path.cells.has(c + "," + r)) G.slots.push({ c, r });
+  startWave();
+  summonFree(); summonFree();
+}
+
+function summonCost() { return Math.round((20 + G.summons * 2) * G.buff.cost); }
+function heroAt(c, r) { return G.heroes.find(h => h.c === c && h.r === r) || null; }
+function emptySlots() { return G.slots.filter(s => !heroAt(s.c, s.r)); }
+function makeHero(job, c, r) {
+  const h = { id: ++uid, job: JOBS[job], c, r, x: c * CELL + CELL / 2, y: r * CELL + CELL / 2, ang: Math.random() * TAU, cd: Math.random() * 0.5, pop: 0, aim: -Math.PI / 2,
+    el: pick(["fire", "ice", "thunder"]), stun: 0 };
+  G.heroes.push(h); return h;
+}
+function summonFree() {
+  const e = emptySlots(); if (!e.length) return null;
+  const s = pick(e), h = makeHero(rollBase(), s.c, s.r);
+  burst(h.x, h.y, "#fff", 10, 120); return h;
+}
+function summon() {
+  if (!G || G.state !== "play") return;
+  const cost = summonCost();
+  if (G.coins < cost) { toast("コインが足りません"); SFX.bad(); return; }
+  if (!emptySlots().length) { toast("空いているマスがありません"); SFX.bad(); return; }
+  G.coins -= cost; G.summons++;
+  const h = summonFree(); SFX.summon();
+  addText(h.x, h.y - 26, h.job.line === "mage" ? `${h.job.name}（${EL[h.el].name}）` : h.job.name, LINE[h.job.line].c2, 12, 0.9);
+  updateBar();
+}
+function sellValue(h) { return 10 * Math.pow(2, h.job.rank - 1); }
+
+// ---------- ウェーブ ----------
+function waveHp(w) { return Math.round(30 * G.st.hp * Math.pow(HP_GROW, w - 1)); }
+function startWave() {
+  G.wave++;
+  if (G.wave > 1) G.coins += Math.round((WAVE_BONUS + G.wave) * G.buff.coin);
+  const boss = G.wave % 10 === 0;
+  G.waveT = boss ? 60 : 18;
+  G.spawnLeft = boss ? 4 + Math.floor(G.wave / 5) : 9 + G.wave;
+  G.spawnT = 0;
+  if (boss) {
+    const [kind, name] = G.st.boss;
+    const hp = waveHp(G.wave) * (G.wave === 30 ? BOSS_MUL[1] : BOSS_MUL[0]);
+    G.boss = spawnEnemy(kind, hp, true); G.boss.name = name;
+    showBanner(`BOSS  ${name}`, `${G.waveT}秒以内に倒せ！`); SFX.boss();
+  } else {
+    G.boss = null;
+    if (G.wave > 1) SFX.wave();
+    showBanner(`WAVE ${G.wave}`, "");
+  }
+}
+function spawnEnemy(kind, hp, boss = false) {
+  const p = G.path.pts[0];
+  const e = { kind, hp, max: hp, d: 0, x: p.x, y: p.y, spd: boss ? 26 : 40 + Math.min(G.wave, 30) * 0.5, boss,
+    r: boss ? 22 : 11, slowT: 0, slowF: 1, burnT: 0, burn: 0, hitT: new Map(), dead: false, bob: Math.random() * 6, flash: 0, sp: 0 };
+  G.enemies.push(e); return e;
+}
+function nextWaveCheck() {
+  if (G.wave >= WAVES) return;
+  if (G.wave % 5 === 0) openBuff(); else startWave();
+}
+
+// ---------- 合成 ----------
+let pendingMerge = null;
+function canMerge(a, b) { return a !== b && a.job.id === b.job.id && a.job.next.length > 0; }
+function doMerge(src, dst) {
+  const nx = dst.job.next;
+  if (nx.length === 1) finishMerge(src, dst, nx[0]);
+  else { pendingMerge = { src, dst }; openChoose(dst.job); }
+}
+function finishMerge(src, dst, job) {
+  G.heroes = G.heroes.filter(h => h !== src);
+  dst.job = JOBS[job]; dst.pop = 1; if (dst.job.el) dst.el = dst.job.el;
+  if (G.sel === src) G.sel = dst;
+  burst(dst.x, dst.y, RANK_COL[dst.job.rank], 24, 200);
+  fx.rings.push({ x: dst.x, y: dst.y, r: 10, maxR: 50, life: 0.5, max: 0.5, col: RANK_COL[dst.job.rank], w: 5 });
+  addText(dst.x, dst.y - 30, dst.job.name + "！", RANK_COL[dst.job.rank], 14, 1.1);
+  SFX.merge(); updateBar();
+}
+
+// ---------- 入力 ----------
+let press = null;
+function toField(px, py) { return { x: (px - FX) / S, y: (py - FY) / S }; }
+function cellAt(px, py) {
+  const f = toField(px, py), c = Math.floor(f.x / CELL), r = Math.floor(f.y / CELL);
+  if (c < 0 || r < 0 || c >= COLS || r >= ROWS) return null;
+  return { c, r, slot: !G.path.cells.has(c + "," + r) };
+}
+cv.addEventListener("pointerdown", e => {
+  audio();
+  if (!G || paused || G.state !== "play") return;
+  const cell = cellAt(e.clientX, e.clientY);
+  const h = cell ? heroAt(cell.c, cell.r) : null;
+  press = { h, sx: e.clientX, sy: e.clientY, x: e.clientX, y: e.clientY, drag: false, id: e.pointerId };
+  try { cv.setPointerCapture(e.pointerId); } catch (_) {}
+});
+cv.addEventListener("pointermove", e => {
+  if (!press || e.pointerId !== press.id) return;
+  press.x = e.clientX; press.y = e.clientY;
+  if (press.h && !press.drag && Math.hypot(press.x - press.sx, press.y - press.sy) > 8) { press.drag = true; G.sel = press.h; updateBar(); }
+});
+cv.addEventListener("pointerup", e => {
+  if (!press || e.pointerId !== press.id) return;
+  const p = press; press = null;
+  if (!G || G.state !== "play") return;
+  if (p.drag) {
+    const cell = cellAt(e.clientX, e.clientY);
+    if (!cell || !cell.slot) { SFX.bad(); return; }
+    const other = heroAt(cell.c, cell.r);
+    if (other === p.h) return;
+    if (!other) { p.h.c = cell.c; p.h.r = cell.r; p.h.x = cell.c * CELL + CELL / 2; p.h.y = cell.r * CELL + CELL / 2; SFX.tap(); return; }
+    if (canMerge(p.h, other)) { doMerge(p.h, other); return; }
+    if (p.h.job.id === other.job.id) { toast("最高ランクなので合成できません"); SFX.bad(); return; }
+    // 入れ替え
+    [p.h.c, other.c] = [other.c, p.h.c]; [p.h.r, other.r] = [other.r, p.h.r];
+    for (const h of [p.h, other]) { h.x = h.c * CELL + CELL / 2; h.y = h.r * CELL + CELL / 2; }
+    SFX.tap(); return;
+  }
+  G.sel = p.h && G.sel !== p.h ? p.h : null;
+  if (p.h) SFX.tap();
+  updateBar();
+});
+cv.addEventListener("pointercancel", () => { press = null; });
+
+// ---------- ダメージ ----------
+// 魔法の特殊効果（ランクが上がるほど強い）
+function mageEff(h) {
+  const r = h.job.rank - 1;
+  if (h.el === "fire") return { burn: [[3, 2], [7, 2], [16, 2], [38, 3]][r] };
+  if (h.el === "ice") return { slow: [[0.75, 1], [0.65, 1.2], [0.5, 1.5], [0.3, 1.5]][r] };
+  return { stun: [0.3, 0.4, 0.5, 0.6][r] };
+}
+function dmgOf(h) { return h.job.dmg * DMG_MUL * G.buff.line[h.job.line] * G.buff.all; }
+function hit(e, dmg, h) {
+  if (e.dead) return;
+  e.hp -= dmg; e.flash = 0.08;
+  if (h) {
+    const j = h.job, ef = j.line === "mage" ? mageEff(h) : j;
+    if (ef.slow) { e.slowF = e.slowT > 0 ? Math.min(e.slowF, ef.slow[0]) : ef.slow[0]; e.slowT = Math.max(e.slowT, ef.slow[1]); }
+    if (ef.burn) { e.burn = Math.max(e.burn, ef.burn[0] * DMG_MUL * G.buff.line.mage * G.buff.all); e.burnT = ef.burn[1]; }
+    if (ef.stun && !e.boss) e.stunT = Math.max(e.stunT || 0, ef.stun);
+  }
+  if (fx.texts.length < 18 && Math.random() < (dmg >= 100 ? 0.5 : 0.15)) addText(e.x + rand(-6, 6), e.y - e.r - 4, Math.round(dmg), "#fff", 11, 0.5);
+  SFX.hit();
+  if (e.hp <= 0) killEnemy(e);
+}
+function killEnemy(e) {
+  e.dead = true; G.kills++;
+  const reward = Math.round((e.boss ? 80 : e.elite ? 10 : 3) * G.buff.coin);
+  G.coins += reward;
+  burst(e.x, e.y, EKIND[e.kind].c1, e.boss ? 40 : 8, e.boss ? 260 : 140);
+  if (e.boss) {
+    addText(e.x, e.y - 30, `+${reward}`, "#f2b134", 18, 1.2);
+    fx.rings.push({ x: e.x, y: e.y, r: 20, maxR: 120, life: 0.7, max: 0.7, col: "#fff", w: 8 });
+    if (G.wave >= WAVES) win(); else G.waveT = Math.min(G.waveT, 2);
+  }
+  SFX.kill();
+}
+
+// ---------- 更新 ----------
+function update(dt) {
+  if (banner) { banner.t += dt; if (banner.t > banner.dur) banner = null; }
+  updateFx(dt);
+  if (!G) return;
+  if (G.state === "end") { G.endT -= dt; if (G.endT <= 0) { G.state = "done"; showResult(); } }
+  if (G.state !== "play") return;
+  G.t += dt;
+  // ウェーブ
+  G.waveT -= dt;
+  if (G.spawnLeft > 0) {
+    G.spawnT -= dt;
+    if (G.spawnT <= 0) {
+      G.spawnLeft--; G.spawnT = G.boss ? 1.2 : Math.max(0.42, 0.75 - G.wave * 0.011);
+      const eliteP = G.wave > 20 ? 0.2 : G.wave > 10 ? 0.12 : 0;
+      if (Math.random() < eliteP) { const e = spawnEnemy(pick(G.st.kinds), waveHp(G.wave) * 3.5); e.elite = true; e.r = 15; e.spd *= 0.8; }
+      else { const e = spawnEnemy(pick(G.st.kinds), waveHp(G.wave)); if (G.wave > 20 && Math.random() < 0.08) e.striker = true; }
+    }
+  }
+  if (G.waveT <= 0) {
+    if (G.boss && !G.boss.dead) { lose("ボスを倒しきれなかった"); return; }
+    if (G.wave >= WAVES) { if (!G.boss || G.boss.dead) win(); return; }
+    nextWaveCheck();
+  }
+  // 敵の移動
+  const L = G.path.L;
+  for (const e of G.enemies) {
+    if (e.dead) continue;
+    e.flash = Math.max(0, e.flash - dt); e.sp = Math.min(1, e.sp + dt * 3);
+    if (e.slowT > 0) { e.slowT -= dt; if (e.slowT <= 0) e.slowF = 1; }
+    if (e.burnT > 0) { e.burnT -= dt; e.hp -= e.burn * dt; if (Math.random() < dt * 8) fx.parts.push({ x: e.x + rand(-5, 5), y: e.y, vx: 0, vy: -40, life: 0.4, max: 0.4, col: "#ff8a3d", size: 2.5 });
+      if (e.hp <= 0) { killEnemy(e); continue; } }
+    if (e.stunT > 0) { e.stunT -= dt; continue; }
+    e.d += e.spd * e.slowF * G.buff.eSpd * dt;
+    if (e.d >= L) { e.d -= L; burst(G.path.pts[0].x, G.path.pts[0].y, "#b58cff", 4, 80); }
+    const p = posAt(G.path, e.d); e.x = p.x; e.y = p.y;
+  }
+  enemyAttacks(dt);
+  // 冒険者の攻撃
+  for (const h of G.heroes) {
+    const j = h.job;
+    h.pop = Math.max(0, h.pop - dt * 2.5);
+    if (h.stun > 0) { h.stun -= dt; continue; }
+    if (j.line === "bow") { bowUpdate(h, dt); continue; }
+    if (j.line === "mage") { mageUpdate(h, dt); continue; }
+    const a0 = h.ang, w = j.spd * G.buff.spin, a1 = a0 + w * dt;
+    h.ang = a1 % TAU;
+    const reach = j.R;
+    for (const e of G.enemies) {
+      if (e.dead) continue;
+      const dx = e.x - h.x, dy = e.y - h.y;
+      if (Math.abs(dx) > reach + e.r || Math.abs(dy) > reach + e.r) continue;
+      const d = Math.hypot(dx, dy);
+      if (d > reach + e.r || d < 6) continue;
+      const tol = Math.atan2(e.r + 4, d), ea = Math.atan2(dy, dx), span = a1 - a0;
+      for (let k = 0; k < j.n; k++) {
+        const off = k * TAU / j.n;
+        if (modT(ea - (a0 + off) + tol) <= span + 2 * tol) {
+          const key = h.id * 8 + k, last = e.hitT.get(key) || -9;
+          if (G.t - last > 0.18) { e.hitT.set(key, G.t); hit(e, dmgOf(h), h); }
+        }
+      }
+    }
+  }
+  // 矢
+  for (let i = fx.arrows.length - 1; i >= 0; i--) {
+    const a = fx.arrows[i];
+    if (a.tgt.dead) { fx.arrows.splice(i, 1); continue; }
+    const dx = a.tgt.x - a.x, dy = a.tgt.y - a.y, d = Math.hypot(dx, dy), st = a.spd * dt;
+    if (d <= st + a.tgt.r) { hit(a.tgt, a.dmg, null); fx.arrows.splice(i, 1); continue; }
+    a.x += dx / d * st; a.y += dy / d * st; a.ang = Math.atan2(dy, dx);
+  }
+  G.enemies = G.enemies.filter(e => !e.dead);
+  if (G.enemies.length >= CAP) lose("モンスターがあふれた");
+}
+
+// 魔法：範囲内の敵全員に一定間隔で魔法が落ちる
+function mageUpdate(h, dt) {
+  const j = h.job;
+  h.ang = (h.ang + 2.5 * dt) % TAU;     // まわりを回る小さな光（見た目だけ）
+  h.cd -= dt * G.buff.spin;
+  if (h.cd > 0) return;
+  const inR = G.enemies.filter(e => !e.dead && Math.hypot(e.x - h.x, e.y - h.y) <= j.R + e.r);
+  if (!inR.length) { h.cd = 0.15; return; }
+  const el = EL[h.el];
+  fx.rings.push({ x: h.x, y: h.y, r: 14, maxR: j.R, life: 0.35, max: 0.35, col: el.c2, w: 3 });
+  for (const e of inR) {
+    if (h.el === "thunder") fx.bolts.push({ x: e.x, y: e.y, life: 0.25, max: 0.25 });
+    else burst(e.x, e.y, el.c1, 4, 70);
+    hit(e, dmgOf(h), h);
+  }
+  h.cd = j.rate;
+}
+
+// 敵の攻撃：近くの冒険者をしびれさせる
+function enemyAttacks(dt) {
+  if (G.wave <= 10) return;
+  for (const e of G.enemies) {
+    if (e.dead || !(e.elite || e.boss || e.striker)) continue;
+    e.atkT = (e.atkT ?? rand(1, 4)) - dt;
+    if (e.atkT > 0) continue;
+    const stunT = G.wave > 20 ? 2 : 1.5;
+    if (e.boss) {
+      e.atkT = G.wave >= 30 ? 7 : 9;
+      const hit = G.heroes.filter(h => Math.hypot(h.x - e.x, h.y - e.y) < 150);
+      fx.rings.push({ x: e.x, y: e.y, r: e.r, maxR: 150, life: 0.6, max: 0.6, col: "#ff5d5d", w: 8 });
+      for (const h of hit) h.stun = Math.max(h.stun, stunT);
+      if (hit.length) { addText(e.x, e.y - e.r - 14, "しびれ攻撃！", "#ff9f8a", 13, 1); SFX.boss(); }
+      continue;
+    }
+    e.atkT = rand(4, 6);
+    let tgt = null, best = 100;
+    for (const h of G.heroes) { const d = Math.hypot(h.x - e.x, h.y - e.y); if (d < best && h.stun <= 0) { best = d; tgt = h; } }
+    if (!tgt) { e.atkT = 0.5; continue; }
+    fx.eshots.push({ x: e.x, y: e.y, tgt, t: 0, stun: stunT });
+  }
+  for (let i = fx.eshots.length - 1; i >= 0; i--) {
+    const s = fx.eshots[i]; s.t += dt;
+    const dx = s.tgt.x - s.x, dy = s.tgt.y - s.y, d = Math.hypot(dx, dy), st = 260 * dt;
+    if (d <= st + 8 || !G.heroes.includes(s.tgt)) {
+      fx.eshots.splice(i, 1);
+      if (G.heroes.includes(s.tgt)) { s.tgt.stun = Math.max(s.tgt.stun, s.stun); burst(s.tgt.x, s.tgt.y, "#ff5d5d", 8, 120); SFX.bad(); }
+      continue;
+    }
+    s.x += dx / d * st; s.y += dy / d * st;
+  }
+}
+
+function bowUpdate(h, dt) {
+  const j = h.job;
+  h.cd -= dt * G.buff.rate;
+  if (h.cd > 0) return;
+  const inR = G.enemies.filter(e => !e.dead && Math.hypot(e.x - h.x, e.y - h.y) <= j.range + e.r);
+  if (!inR.length) { h.cd = 0.1; return; }
+  let targets;
+  if (j.snipe) targets = [inR.reduce((a, b) => b.hp > a.hp ? b : a)];
+  else {
+    inR.sort((a, b) => Math.hypot(a.x - h.x, a.y - h.y) - Math.hypot(b.x - h.x, b.y - h.y));
+    targets = inR.slice(0, j.multi || 1);
+  }
+  for (const t of targets) {
+    fx.arrows.push({ x: h.x, y: h.y, tgt: t, dmg: dmgOf(h), spd: j.snipe ? 900 : 560, ang: 0, big: !!j.snipe, col: RANK_COL[j.rank] });
+    h.aim = Math.atan2(t.y - h.y, t.x - h.x);
+  }
+  h.cd = j.rate;
+}
+
+function updateFx(dt) {
+  for (let i = fx.parts.length - 1; i >= 0; i--) {
+    const p = fx.parts[i]; p.life -= dt; p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= 0.9; p.vy *= 0.9;
+    if (p.life <= 0) fx.parts.splice(i, 1);
+  }
+  for (let i = fx.texts.length - 1; i >= 0; i--) { const t = fx.texts[i]; t.life -= dt; t.y -= 30 * dt; if (t.life <= 0) fx.texts.splice(i, 1); }
+  for (let i = fx.rings.length - 1; i >= 0; i--) { const r = fx.rings[i]; r.life -= dt; if (r.life <= 0) fx.rings.splice(i, 1); }
+  for (let i = fx.bolts.length - 1; i >= 0; i--) { const b = fx.bolts[i]; b.life -= dt; if (b.life <= 0) fx.bolts.splice(i, 1); }
+  if (fx.parts.length > 400) fx.parts.splice(0, fx.parts.length - 400);
+}
+function burst(x, y, col, n, sp) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * TAU, v = rand(0.3, 1) * sp;
+    fx.parts.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: rand(0.3, 0.6), max: 0.6, col, size: rand(1.5, 3.5) });
+  }
+}
+function addText(x, y, txt, col, size, life) { fx.texts.push({ x, y, txt, col, size, life, max: life }); }
+function showBanner(text, sub) { banner = { text, sub, t: 0, dur: 1.5 }; }
+
+function win() {
+  if (G.state !== "play") return;
+  G.state = "end"; G.win = true; G.endT = 1.6;
+  save.cleared[stageIdx] = true; writeSave();
+  showBanner("STAGE CLEAR!", G.st.name); SFX.clear();
+}
+function lose(why) {
+  if (G.state !== "play") return;
+  G.state = "end"; G.win = false; G.why = why; G.endT = 1.4;
+  showBanner("GAME OVER", why); SFX.lose();
+}
+
+// ---------- 描画 ----------
+function rr(x, y, w, h, r) { ctx.beginPath(); ctx.roundRect ? ctx.roundRect(x, y, w, h, r) : ctx.rect(x, y, w, h); }
+
+function draw() {
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.fillStyle = "#10161f"; ctx.fillRect(0, 0, W, H);
+  if (!G) return;
+  ctx.save(); ctx.translate(FX, FY); ctx.scale(S, S);
+  drawField();
+  for (const e of G.enemies) drawEnemy(e);
+  const dragging = press && press.drag ? press.h : null;
+  ctx.save(); rr(0, 0, FW, FH, 12); ctx.clip();
+  for (const h of G.heroes) if (h !== dragging) drawWeapon(h);
+  ctx.restore();
+  for (const h of G.heroes) if (h !== dragging) drawHero(h, h.x, h.y);
+  drawArrows();
+  drawFx();
+  if (dragging) {
+    const f = toField(press.x, press.y);
+    ctx.globalAlpha = 0.85; drawHero(dragging, f.x, f.y); ctx.globalAlpha = 1;
+  }
+  ctx.restore();
+  drawHud();
+  if (banner) drawBanner();
+}
+
+function drawField() {
+  const st = G.st;
+  ctx.fillStyle = st.ground; rr(0, 0, FW, FH, 12); ctx.fill();
+  ctx.save(); rr(0, 0, FW, FH, 12); ctx.clip();
+  // 地面の模様
+  ctx.fillStyle = st.g2;
+  for (let i = 0; i < 40; i++) { const x = (i * 97) % FW, y = (i * 173) % FH; ctx.beginPath(); ctx.ellipse(x, y, 14, 6, 0, 0, TAU); ctx.fill(); }
+  // マス
+  const dragging = press && press.drag ? press.h : null;
+  for (const s of G.slots) {
+    const x = s.c * CELL, y = s.r * CELL;
+    ctx.fillStyle = st.tile; rr(x + 5, y + 5, CELL - 10, CELL - 10, 10); ctx.fill();
+    ctx.strokeStyle = st.tileE; ctx.lineWidth = 2; ctx.stroke();
+    const occ = heroAt(s.c, s.r);
+    if (dragging && occ && occ !== dragging && canMerge(dragging, occ)) {
+      ctx.strokeStyle = "#f2b134"; ctx.lineWidth = 3 + Math.sin(G.t * 8) * 1; rr(x + 3, y + 3, CELL - 6, CELL - 6, 12); ctx.stroke();
+    }
+    if (dragging && !occ) { ctx.strokeStyle = "rgba(255,255,255,.3)"; ctx.lineWidth = 2; rr(x + 5, y + 5, CELL - 10, CELL - 10, 10); ctx.stroke(); }
+  }
+  // 道
+  const P = G.path.pts;
+  ctx.lineCap = "round"; ctx.lineJoin = "round";
+  ctx.strokeStyle = st.pathE; ctx.lineWidth = CELL - 6;
+  ctx.beginPath(); P.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)); ctx.stroke();
+  ctx.strokeStyle = st.path; ctx.lineWidth = CELL - 14; ctx.stroke();
+  ctx.setLineDash([3, 14]); ctx.strokeStyle = "rgba(0,0,0,.12)"; ctx.lineWidth = 3; ctx.stroke(); ctx.setLineDash([]);
+  // 入口と出口の魔法陣
+  for (const [p, col] of [[P[0], "#b58cff"], [P[P.length - 1], "#ff7aa8"]]) {
+    ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(G.t * (col === "#b58cff" ? 1 : -1));
+    ctx.strokeStyle = col; ctx.lineWidth = 2.5; ctx.globalAlpha = 0.85;
+    ctx.beginPath(); ctx.arc(0, 0, 20, 0, TAU); ctx.stroke();
+    ctx.beginPath(); for (let i = 0; i < 6; i++) { const a = i * TAU / 6; ctx.lineTo(Math.cos(a) * 20, Math.sin(a) * 20); } ctx.closePath(); ctx.stroke();
+    ctx.restore(); ctx.globalAlpha = 1;
+  }
+  ctx.restore();
+  // 選択中の冒険者の範囲
+  if (G.sel && G.heroes.includes(G.sel)) {
+    const h = G.sel, R = h.job.line === "bow" ? h.job.range : h.job.R;
+    ctx.save(); rr(0, 0, FW, FH, 12); ctx.clip();
+    ctx.fillStyle = "rgba(255,255,255,.07)"; ctx.strokeStyle = "rgba(255,255,255,.4)"; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(h.x, h.y, R, 0, TAU); ctx.fill(); ctx.stroke(); ctx.restore();
+    // 合成できる相手
+    for (const o of G.heroes) if (canMerge(h, o)) {
+      ctx.strokeStyle = "#f2b134"; ctx.lineWidth = 2.5; rr(o.c * CELL + 3, o.r * CELL + 3, CELL - 6, CELL - 6, 12); ctx.stroke();
+    }
+  }
+  ctx.strokeStyle = "rgba(255,255,255,.18)"; ctx.lineWidth = 2; rr(1, 1, FW - 2, FH - 2, 12); ctx.stroke();
+}
+
+function drawWeapon(h) {
+  const j = h.job, col = LINE[j.line], rc = RANK_COL[j.rank];
+  if (j.line === "bow") return;
+  if (j.line === "mage") {
+    const el = EL[h.el], n = 1 + Math.min(j.rank, 3);
+    for (let k = 0; k < n; k++) {
+      const a = h.ang + k * TAU / n, ox = h.x + Math.cos(a) * 22, oy = h.y + Math.sin(a) * 22, rad = 2.5 + j.rank * 0.6;
+      const g = ctx.createRadialGradient(ox, oy, 0.5, ox, oy, rad + 2);
+      g.addColorStop(0, "#fff"); g.addColorStop(0.5, el.c1); g.addColorStop(1, el.c2);
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(ox, oy, rad, 0, TAU); ctx.fill();
+    }
+    return;
+  }
+  for (let k = 0; k < j.n; k++) {
+    const a = h.ang + k * TAU / j.n;
+    // 軌跡
+    if (!(h.stun > 0)) {
+    ctx.strokeStyle = "rgba(255,255,255,.18)"; ctx.lineWidth = 10; ctx.lineCap = "round";
+    ctx.beginPath(); ctx.arc(h.x, h.y, j.R - 8, a - 0.9, a); ctx.stroke(); }
+    ctx.save(); ctx.translate(h.x, h.y); ctx.rotate(a);
+    if (j.line === "sword") {
+      const L = j.R, wdt = 3 + j.rank;
+      ctx.fillStyle = "#6b4a2b"; ctx.fillRect(8, -2, 8, 4);
+      ctx.fillStyle = rc; ctx.fillRect(15, -wdt - 1, 3, wdt * 2 + 2);
+      ctx.fillStyle = "#e9f1f8"; ctx.strokeStyle = "#8aa0b5"; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(18, -wdt / 2); ctx.lineTo(L - 6, -wdt / 2); ctx.lineTo(L, 0); ctx.lineTo(L - 6, wdt / 2); ctx.lineTo(18, wdt / 2); ctx.closePath(); ctx.fill(); ctx.stroke();
+    } else {
+      const L = j.R;
+      ctx.strokeStyle = "#7a5634"; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(6, 0); ctx.lineTo(L - 12, 0); ctx.stroke();
+      ctx.fillStyle = "#dfe7ee"; ctx.strokeStyle = "#7d8c99"; ctx.lineWidth = 1;
+      if (j.id === "spear3b" || j.id === "spear4b") {
+        ctx.beginPath(); ctx.moveTo(L - 18, 0); ctx.quadraticCurveTo(L - 10, -16, L - 2, -10); ctx.lineTo(L - 6, 0); ctx.lineTo(L - 2, 10); ctx.quadraticCurveTo(L - 10, 16, L - 18, 0); ctx.fill(); ctx.stroke();
+      } else {
+        ctx.beginPath(); ctx.moveTo(L - 14, -5 - j.rank * 0.6); ctx.lineTo(L, 0); ctx.lineTo(L - 14, 5 + j.rank * 0.6); ctx.closePath(); ctx.fill(); ctx.stroke();
+      }
+      ctx.fillStyle = rc; ctx.fillRect(L - 16, -2, 3, 4);
+    }
+    ctx.restore();
+  }
+}
+
+function drawHero(h, x, y) {
+  const j = h.job, col = LINE[j.line], rc = RANK_COL[j.rank], r = 14 + h.pop * 4;
+  ctx.fillStyle = "rgba(0,0,0,.28)"; ctx.beginPath(); ctx.ellipse(x, y + 13, 13, 4, 0, 0, TAU); ctx.fill();
+  const g = ctx.createRadialGradient(x - 4, y - 5, 2, x, y, r);
+  g.addColorStop(0, col.c2); g.addColorStop(1, col.c1);
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fill();
+  ctx.strokeStyle = rc; ctx.lineWidth = j.rank >= 3 ? 3.2 : 2.4; ctx.stroke();
+  // 帽子・かぶと
+  ctx.fillStyle = j.rank >= 4 ? "#f2b134" : "#dfe7ee";
+  switch (j.line) {
+    case "sword": ctx.beginPath(); ctx.arc(x, y - 4, r * 0.95, Math.PI * 1.08, Math.PI * 1.92); ctx.closePath(); ctx.fill(); break;
+    case "spear":
+      ctx.beginPath(); ctx.arc(x, y - 4, r * 0.95, Math.PI * 1.08, Math.PI * 1.92); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = "#ff5d5d"; ctx.beginPath(); ctx.ellipse(x, y - r - 2, 3, 6, 0, 0, TAU); ctx.fill(); break;
+    case "mage":
+      ctx.fillStyle = EL[h.el] ? EL[h.el].hat : "#4b2a8a";
+      ctx.beginPath(); ctx.moveTo(x - r * 0.95, y - 5); ctx.lineTo(x + r * 0.95, y - 5); ctx.lineTo(x + 3, y - r - 12); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = "#f2b134"; ctx.fillRect(x - r * 0.9, y - 7, r * 1.8, 2.5); break;
+    case "bow":
+      ctx.fillStyle = "#1f6b3c"; ctx.beginPath(); ctx.arc(x, y - 3, r * 1.0, Math.PI * 1.02, Math.PI * 1.98); ctx.closePath(); ctx.fill(); break;
+  }
+  // 顔
+  for (const s of [-1, 1]) {
+    ctx.fillStyle = "#14202c"; ctx.beginPath(); ctx.ellipse(x + s * 4.5, y + 2, 2, 2.8, 0, 0, TAU); ctx.fill();
+  }
+  // 弓
+  if (j.line === "bow") {
+    ctx.save(); ctx.translate(x, y); ctx.rotate(h.aim);
+    ctx.strokeStyle = "#7a5634"; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.arc(10, 0, 12, -1.2, 1.2); ctx.stroke();
+    ctx.strokeStyle = "#e8e8e8"; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(10 + Math.cos(-1.2) * 12, Math.sin(-1.2) * 12); ctx.lineTo(10 + Math.cos(1.2) * 12, Math.sin(1.2) * 12); ctx.stroke();
+    ctx.restore();
+  }
+  if (h.stun > 0) {
+    ctx.fillStyle = "rgba(20,24,40,.45)"; ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fill();
+    for (let i = 0; i < 3; i++) { const a = G.t * 5 + i * TAU / 3; star(x + Math.cos(a) * 12, y - r - 4 + Math.sin(a) * 3, 3.5, "#fff3a8"); }
+  }
+  // ランクの星
+  const n = j.rank, sx = x - (n - 1) * 4.5;
+  for (let i = 0; i < n; i++) star(sx + i * 9, y + r + 5, 4, rc);
+}
+function star(x, y, s, col) {
+  ctx.fillStyle = col; ctx.strokeStyle = "rgba(0,0,0,.45)"; ctx.lineWidth = 1; ctx.beginPath();
+  for (let i = 0; i < 10; i++) { const a = -Math.PI / 2 + i * Math.PI / 5, r = i % 2 ? s * 0.45 : s; ctx.lineTo(x + Math.cos(a) * r, y + Math.sin(a) * r); }
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+}
+
+function drawEnemy(e) {
+  const k = EKIND[e.kind], r = e.r * (0.5 + 0.5 * e.sp), x = e.x, y = e.y + Math.sin(G.t * 5 + e.bob) * 1.5;
+  ctx.fillStyle = "rgba(0,0,0,.25)"; ctx.beginPath(); ctx.ellipse(x, y + r * 0.9, r * 0.85, r * 0.28, 0, 0, TAU); ctx.fill();
+  const g = ctx.createRadialGradient(x - r * 0.3, y - r * 0.4, r * 0.1, x, y, r * 1.1);
+  g.addColorStop(0, k.c1); g.addColorStop(1, k.c2);
+  const fill = () => { ctx.fillStyle = e.flash > 0 ? "#fff" : g; ctx.fill(); ctx.strokeStyle = "rgba(0,0,0,.35)"; ctx.lineWidth = 1.5; ctx.stroke(); };
+  switch (k.shape) {
+    case "blob": ctx.beginPath(); ctx.arc(x, y, r, Math.PI, 0); ctx.quadraticCurveTo(x + r, y + r * 0.85, x, y + r * 0.85); ctx.quadraticCurveTo(x - r, y + r * 0.85, x - r, y); fill(); break;
+    case "ears":
+      ctx.fillStyle = k.c2;
+      for (const s of [-1, 1]) { ctx.beginPath(); ctx.moveTo(x + s * r * 0.6, y - r * 0.4); ctx.lineTo(x + s * r * 1.5, y - r * 0.8); ctx.lineTo(x + s * r * 0.85, y + r * 0.1); ctx.fill(); }
+      ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); fill(); break;
+    case "wings":
+      ctx.fillStyle = k.c2;
+      for (const s of [-1, 1]) { const f = Math.sin(G.t * 14 + e.bob) * 0.3; ctx.beginPath(); ctx.moveTo(x + s * r * 0.5, y - r * 0.2); ctx.lineTo(x + s * r * 1.7, y - r * (0.7 + f)); ctx.lineTo(x + s * r * 1.2, y + r * 0.3); ctx.closePath(); ctx.fill(); }
+      ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); fill(); break;
+    case "skull":
+      ctx.beginPath(); ctx.arc(x, y - r * 0.1, r, 0, TAU); fill();
+      ctx.fillStyle = "#2a2230";
+      for (const s of [-1, 1]) { ctx.beginPath(); ctx.ellipse(x + s * r * 0.36, y - r * 0.12, r * 0.24, r * 0.28, 0, 0, TAU); ctx.fill(); }
+      ctx.fillRect(x - r * 0.3, y + r * 0.45, r * 0.6, r * 0.12);
+      break;
+    case "block": rr(x - r, y - r, r * 2, r * 2, r * 0.4); fill(); break;
+    case "horns":
+      ctx.fillStyle = "#2a1020";
+      for (const s of [-1, 1]) { ctx.beginPath(); ctx.moveTo(x + s * r * 0.4, y - r * 0.7); ctx.quadraticCurveTo(x + s * r * 1.3, y - r * 1.1, x + s * r * 1.1, y - r * 1.6); ctx.lineTo(x + s * r * 0.75, y - r * 0.5); ctx.fill(); }
+      ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); fill(); break;
+  }
+  if (k.shape !== "skull") {
+    for (const s of [-1, 1]) {
+      ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.arc(x + s * r * 0.35, y - r * 0.05, r * 0.22, 0, TAU); ctx.fill();
+      ctx.fillStyle = "#1a1220"; ctx.beginPath(); ctx.arc(x + s * r * 0.35, y + r * 0.02, r * 0.11, 0, TAU); ctx.fill();
+    }
+  }
+  if (e.boss) {
+    ctx.fillStyle = "#f2b134"; ctx.beginPath();
+    ctx.moveTo(x - r * 0.55, y - r * 0.8); ctx.lineTo(x - r * 0.55, y - r * 1.25); ctx.lineTo(x - r * 0.25, y - r * 1.02); ctx.lineTo(x, y - r * 1.4);
+    ctx.lineTo(x + r * 0.25, y - r * 1.02); ctx.lineTo(x + r * 0.55, y - r * 1.25); ctx.lineTo(x + r * 0.55, y - r * 0.8); ctx.closePath(); ctx.fill();
+  }
+  if (e.elite) { ctx.strokeStyle = "rgba(255,93,93,.85)"; ctx.lineWidth = 2.5; ctx.setLineDash([4, 4]); ctx.beginPath(); ctx.arc(x, y, r + 5, G.t * 2, G.t * 2 + TAU); ctx.stroke(); ctx.setLineDash([]); }
+  if (e.striker) { ctx.fillStyle = "#ff5d5d"; ctx.beginPath(); ctx.arc(x + r * 0.8, y - r * 0.8, 3.5, 0, TAU); ctx.fill(); }
+  if (e.stunT > 0) { for (let i = 0; i < 2; i++) star(x + Math.cos(G.t * 6 + i * 3) * r, y - r - 3, 3, "#fff3a8"); }
+  if (e.slowT > 0) { ctx.strokeStyle = "rgba(160,220,255,.8)"; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, r + 3, 0, TAU); ctx.stroke(); }
+  if (e.hp < e.max) {
+    const bw = e.boss ? 48 : e.elite ? 30 : 22, by = y + r + 4;
+    ctx.fillStyle = "rgba(0,0,0,.6)"; ctx.fillRect(x - bw / 2 - 1, by - 1, bw + 2, 5);
+    ctx.fillStyle = e.boss ? "#ff5d5d" : "#6ee07f"; ctx.fillRect(x - bw / 2, by, bw * Math.max(0, e.hp / e.max), 3);
+  }
+}
+
+function drawArrows() {
+  for (const a of fx.arrows) {
+    ctx.save(); ctx.translate(a.x, a.y); ctx.rotate(a.ang);
+    ctx.strokeStyle = a.big ? "#ffe08a" : "#f4efe2"; ctx.lineWidth = a.big ? 3 : 2;
+    ctx.beginPath(); ctx.moveTo(-10, 0); ctx.lineTo(4, 0); ctx.stroke();
+    ctx.fillStyle = a.col; ctx.beginPath(); ctx.moveTo(6, 0); ctx.lineTo(1, -3); ctx.lineTo(1, 3); ctx.fill();
+    ctx.restore();
+  }
+}
+
+function drawFx() {
+  for (const b of fx.bolts) {
+    ctx.globalAlpha = b.life / b.max; ctx.strokeStyle = "#fff3a8"; ctx.lineWidth = 3; ctx.beginPath();
+    let x = b.x + 6, y = b.y - 40; ctx.moveTo(x, y);
+    for (let i = 0; i < 4; i++) { x += (i % 2 ? 7 : -7); y += 10; ctx.lineTo(x, y); }
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  for (const s of fx.eshots) {
+    ctx.fillStyle = "#ff5d5d"; ctx.beginPath(); ctx.arc(s.x, s.y, 5, 0, TAU); ctx.fill();
+    ctx.strokeStyle = "#fff"; ctx.lineWidth = 1.5; ctx.stroke();
+  }
+  for (const r of fx.rings) {
+    const a = r.life / r.max, rad = r.r + (r.maxR - r.r) * (1 - a);
+    ctx.globalAlpha = a; ctx.strokeStyle = r.col; ctx.lineWidth = r.w * a + 1;
+    ctx.beginPath(); ctx.arc(r.x, r.y, rad, 0, TAU); ctx.stroke();
+  }
+  for (const p of fx.parts) {
+    ctx.globalAlpha = clamp(p.life / p.max, 0, 1); ctx.fillStyle = p.col;
+    ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, TAU); ctx.fill();
+  }
+  ctx.globalAlpha = 1; ctx.textAlign = "center";
+  for (const t of fx.texts) {
+    ctx.globalAlpha = clamp(t.life / t.max * 2, 0, 1);
+    ctx.font = `900 ${t.size}px ${FONT}`; ctx.lineWidth = 3; ctx.strokeStyle = "rgba(8,12,18,.85)";
+    ctx.strokeText(t.txt, t.x, t.y); ctx.fillStyle = t.col; ctx.fillText(t.txt, t.x, t.y);
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawHud() {
+  const top = 8 + SAT, cx = W / 2;
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  // ウェーブと残り時間
+  ctx.fillStyle = "#1b2533"; rr(cx - 54, top, 108, 22, 11); ctx.fill();
+  ctx.fillStyle = G.boss && !G.boss.dead ? "#ff9f8a" : "#9fb0c3"; ctx.font = `800 12px ${FONT}`;
+  ctx.fillText(`${G.boss && !G.boss.dead ? "BOSS " : "WAVE "}${G.wave}/${WAVES}`, cx, top + 11.5);
+  const t = Math.max(0, Math.ceil(G.waveT));
+  ctx.fillStyle = G.boss && !G.boss.dead && t <= 10 ? "#ff5d5d" : "#eef3f8"; ctx.font = `900 20px ${FONT}`;
+  ctx.fillText(`00:${String(t).padStart(2, "0")}`, cx, top + 37);
+  // 敵の数
+  const bw = Math.min(220, W - 120), bx = cx - bw / 2, by = top + 52, ratio = G.enemies.length / CAP;
+  ctx.fillStyle = "#1b2533"; rr(bx, by, bw, 12, 6); ctx.fill();
+  ctx.fillStyle = ratio > 0.75 ? "#ff5d5d" : ratio > 0.5 ? "#f2b134" : "#c45a7a";
+  rr(bx + 1.5, by + 1.5, Math.max(0, (bw - 3) * Math.min(1, ratio)), 9, 4.5); ctx.fill();
+  ctx.fillStyle = "#eef3f8"; ctx.font = `900 10px ${FONT}`;
+  ctx.fillText(`敵 ${G.enemies.length} / ${CAP}`, cx, by + 6.5);
+  // ボスのHP
+  if (G.boss && !G.boss.dead) {
+    const b = G.boss;
+    ctx.textAlign = "left"; ctx.font = `800 11px ${FONT}`; ctx.fillStyle = "#ff9f8a";
+    ctx.fillText(b.name, Math.max(12, FX), top + 11);
+  }
+  ctx.textAlign = "left"; ctx.font = `800 11px ${FONT}`; ctx.fillStyle = "#9fb0c3";
+  ctx.fillText(G.st.name, Math.max(12, FX), top + 30);
+  ctx.textBaseline = "alphabetic";
+}
+
+function drawBanner() {
+  const t = banner.t, a = t < 0.2 ? t / 0.2 : t > banner.dur - 0.3 ? (banner.dur - t) / 0.3 : 1;
+  const cy = FY + FH * S * 0.42;
+  ctx.globalAlpha = clamp(a, 0, 1);
+  ctx.fillStyle = "rgba(8,12,18,.7)"; ctx.fillRect(0, cy - 38, W, 76);
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.font = `900 ${Math.min(34, W / 11)}px ${FONT}`; ctx.lineWidth = 5; ctx.strokeStyle = "#050a10";
+  ctx.strokeText(banner.text, W / 2, cy - (banner.sub ? 8 : 0)); ctx.fillStyle = "#f2b134"; ctx.fillText(banner.text, W / 2, cy - (banner.sub ? 8 : 0));
+  if (banner.sub) { ctx.font = `800 13px ${FONT}`; ctx.fillStyle = "#eef3f8"; ctx.fillText(banner.sub, W / 2, cy + 22); }
+  ctx.globalAlpha = 1; ctx.textBaseline = "alphabetic";
+}
+
+// ---------- 画面とUI ----------
+const $ = id => document.getElementById(id);
+function show(id) {
+  for (const s of document.querySelectorAll(".screen")) s.classList.toggle("on", s.id === id);
+  const inGame = !!G && (id === null || id === "choose");
+  $("menuBtn").classList.toggle("on", inGame && id === null);
+  $("bar").classList.toggle("on", inGame);
+  resize();
+}
+let toastT = 0;
+function toast(msg) { const t = $("toast"); t.textContent = msg; t.classList.add("on"); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove("on"), 1300); }
+
+let lastBar = "";
+function updateBar() {
+  if (!G) return;
+  const cost = summonCost();
+  $("coinTxt").textContent = Math.floor(G.coins);
+  $("costTxt").textContent = cost + "コイン";
+  $("summonBtn").disabled = G.coins < cost || G.state !== "play";
+  const h = G.sel && G.heroes.includes(G.sel) ? G.sel : null;
+  let html;
+  if (h) {
+    const j = h.job, nx = j.next.map(n => JOBS[n].name).join(" / ");
+    const stat = j.line === "bow" ? `攻撃${Math.round(dmgOf(h))}・射程${j.range}` : j.line === "mage" ? `攻撃${Math.round(dmgOf(h))}・範囲${j.R}・${EL[h.el].name}` : `攻撃${Math.round(dmgOf(h))}・刃${j.n}本・射程${j.R}`;
+    html = `<b style="color:${RANK_COL[j.rank]}">${"★".repeat(j.rank)}</b> <b>${j.name}</b>　${stat}<br>${nx ? "合成で → " + nx : "最高ランク"}`;
+  } else html = "同じ冒険者をドラッグして重ねると合成。<br>タップで詳しく見られる";
+  if (html !== lastBar) { $("infoTxt").innerHTML = html; lastBar = html; }
+  $("sellBtn").hidden = !h;
+  if (h) $("sellBtn").textContent = `売る +${sellValue(h)}`;
+}
+
+function openChoose(job) {
+  paused = true;
+  $("chTitle").textContent = "進化先をえらぶ";
+  $("chSub").textContent = `${job.name} ＋ ${job.name}`;
+  $("chCancel").hidden = false;
+  const list = $("chList"); list.innerHTML = "";
+  job.next.forEach(id => {
+    const j = JOBS[id], b = document.createElement("button");
+    b.className = "opt";
+    b.innerHTML = `<i style="background:radial-gradient(circle at 35% 30%,${LINE[j.line].c2},${LINE[j.line].c1});border-color:${RANK_COL[j.rank]}">${"★".repeat(j.rank).length}</i>
+      <div><b>${j.name}</b><span>${j.desc}</span></div>`;
+    b.onclick = () => { const m = pendingMerge; pendingMerge = null; closeChoose(); if (m) finishMerge(m.src, m.dst, id); };
+    list.appendChild(b);
+  });
+  show("choose");
+}
+function openBuff() {
+  paused = true; G.buffing = true;
+  $("chTitle").textContent = "強化をえらぶ";
+  $("chSub").textContent = `WAVE ${G.wave} 突破！ ひとつ選んでください`;
+  $("chCancel").hidden = true;
+  const list = $("chList"); list.innerHTML = "";
+  shuffle(BUFFS.slice()).slice(0, 3).forEach(bf => {
+    const b = document.createElement("button");
+    b.className = "opt";
+    b.innerHTML = `<i style="background:${bf.col}">+</i><div><b>${bf.name}</b><span>${bf.desc}</span></div>`;
+    b.onclick = () => { bf.apply(G.buff); SFX.buy(); G.buffing = false; closeChoose(); startWave(); updateBar(); };
+    list.appendChild(b);
+  });
+  show("choose");
+}
+function closeChoose() { paused = false; show(null); }
+$("chCancel").onclick = () => { pendingMerge = null; SFX.tap(); closeChoose(); };
+
+function renderSelect() {
+  const list = $("stageList"); list.innerHTML = "";
+  STAGES.forEach((st, i) => {
+    const locked = i > 0 && !save.cleared[i - 1];
+    const b = document.createElement("button");
+    b.className = "stage"; b.disabled = locked; b.id = "stage" + i;
+    b.innerHTML = `<div class="sicon" style="background:${st.col}">${i + 1}</div>
+      <div class="sbody"><small>${st.level}</small><strong>${st.name}</strong>
+      <em>${locked ? "前のステージをクリアで解放" : "ボス：" + st.boss[1]}</em></div>
+      ${save.cleared[i] ? '<div class="clear">CLEAR</div>' : ""}`;
+    b.onclick = () => { audio(); SFX.tap(); startStage(i); };
+    list.appendChild(b);
+  });
+}
+function startStage(i) { newGame(i); paused = false; speed = 1; $("speedBtn").textContent = "x1"; $("speedBtn").classList.remove("fast"); show(null); updateBar(); }
+function showResult() {
+  $("resTitle").textContent = G.win ? "ステージクリア！" : "ゲームオーバー";
+  $("resTitle").style.color = G.win ? "var(--gold)" : "var(--red)";
+  $("resSub").textContent = G.st.name + (G.win ? "" : "　" + G.why);
+  $("resWave").textContent = `${G.wave} / ${WAVES}`;
+  $("resKill").textContent = G.kills;
+  show("result");
+}
+
+$("startBtn").onclick = () => { audio(); SFX.tap(); renderSelect(); show("select"); };
+$("backTitle").onclick = () => { SFX.tap(); show("title"); };
+$("menuBtn").onclick = () => { SFX.tap(); paused = true; show("pause"); };
+$("resumeBtn").onclick = () => { SFX.tap(); paused = false; show(null); };
+$("retireBtn").onclick = () => { SFX.tap(); G = null; paused = false; renderSelect(); show("select"); };
+$("retryBtn").onclick = () => { SFX.tap(); startStage(stageIdx); };
+$("toSelect").onclick = () => { SFX.tap(); G = null; renderSelect(); show("select"); };
+$("summonBtn").onclick = () => { audio(); summon(); };
+$("speedBtn").onclick = () => { SFX.tap(); const L = [1, 2, 3, 5]; speed = L[(L.indexOf(speed) + 1) % L.length]; $("speedBtn").textContent = "x" + speed; $("speedBtn").classList.toggle("fast", speed > 1); };
+$("sellBtn").onclick = () => {
+  const h = G && G.sel; if (!h || G.state !== "play") return;
+  G.coins += sellValue(h); G.heroes = G.heroes.filter(o => o !== h); G.sel = null;
+  burst(h.x, h.y, "#f2b134", 10, 120); SFX.buy(); updateBar();
+};
+
+// セーフエリア
+(function () {
+  const p = document.createElement("div");
+  p.style.cssText = "position:fixed;top:0;left:0;height:env(safe-area-inset-top);width:0;visibility:hidden";
+  document.body.appendChild(p);
+  const read = () => { SAT = parseFloat(getComputedStyle(p).height) || 0; resize(); };
+  read(); addEventListener("resize", read);
+})();
+
+// ---------- ループ ----------
+let prev = performance.now(), barT = 0;
+function loop(now) {
+  const dt = Math.min(1 / 30, (now - prev) / 1000); prev = now;
+  if (!paused) { for (let i = 0; i < speed; i++) update(dt); }
+  barT -= dt; if (barT <= 0) { updateBar(); barT = 0.1; }
+  draw();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+// テスト用（自動プレイで確認するため）
+window.__gg = { get G() { return G; }, startStage, summon, doMerge, finishMerge, canMerge, BUFFS, JOBS,
+  tune: (bm, wb, dm, hg) => { BOSS_MUL = bm; WAVE_BONUS = wb; if (dm) DMG_MUL = dm; if (hg) HP_GROW = hg; }, STAGES, step: n => { for (let i = 0; i < n; i++) update(1 / 30); }, get paused() { return paused; }, set paused(v) { paused = v; } };
+</script>
+</body>
+</html>
