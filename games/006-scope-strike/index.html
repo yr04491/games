@@ -1,0 +1,964 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>スコープ・ストライク</title>
+<style>
+  :root{--bg:#0b1118;--panel:#141d27;--panel2:#1b2733;--line:#2a3a4a;--text:#e8eef4;--sub:#8fa3b6;
+    --accent:#ff8a3d;--accent2:#3fb6ff;--good:#5fd38a;--bad:#ff5a5a;--gold:#ffd166}
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--text);overflow:hidden;touch-action:none;
+    font-family:system-ui,-apple-system,"Hiragino Sans","Noto Sans CJK JP","Noto Sans JP",sans-serif;
+    -webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
+  canvas{display:block;position:fixed;inset:0;width:100vw;height:100vh}
+  button{font:inherit;color:inherit;border:0;cursor:pointer}
+  .screen{position:fixed;inset:0;display:none;flex-direction:column;z-index:10}
+  .screen.on{display:flex}
+  /* タイトル */
+  #title{align-items:center;justify-content:center;text-align:center;padding:24px;
+    background:linear-gradient(180deg,rgba(8,12,18,.55),rgba(8,12,18,.9))}
+  #title h1{font-size:clamp(34px,9vw,64px);margin:0;letter-spacing:.04em;font-weight:900}
+  #title h1 span{color:var(--accent)}
+  #title p{color:var(--sub);margin:10px 0 28px;font-size:15px}
+  .big{background:var(--accent);color:#1a0d02;font-weight:900;font-size:18px;padding:14px 44px;border-radius:999px;
+    box-shadow:0 6px 0 #a8501a}
+  .big:active{transform:translateY(3px);box-shadow:0 3px 0 #a8501a}
+  /* ハブ */
+  #hub{background:var(--bg)}
+  .hubTop{display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--line);background:#0e161f}
+  .hubTop h2{font-size:17px;margin:0;flex:1;font-weight:900}
+  .coin{display:inline-flex;align-items:center;gap:6px;font-weight:800;color:var(--gold);font-variant-numeric:tabular-nums}
+  .coin i{width:16px;height:16px;border-radius:50%;background:radial-gradient(circle at 35% 35%,#fff3b0,#ffd166 45%,#c9901a);display:inline-block}
+  .tabs{display:flex;gap:6px;padding:10px 16px 0}
+  .tab{flex:1;padding:10px 0;border-radius:10px 10px 0 0;background:var(--panel);color:var(--sub);font-weight:800;font-size:14px}
+  .tab.on{background:var(--panel2);color:var(--text)}
+  .body{flex:1;overflow-y:auto;background:var(--panel2);margin:0 16px 16px;border-radius:0 0 14px 14px;padding:14px;touch-action:pan-y}
+  .wrap{max-width:720px;width:100%;margin:0 auto;display:flex;flex-direction:column;flex:1;min-height:0}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px}
+  .stage{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 10px;text-align:left}
+  .stage b{display:block;font-size:13px;color:var(--sub)}
+  .stage strong{display:block;font-size:16px;margin:2px 0 6px}
+  .stars{color:var(--gold);letter-spacing:2px;font-size:14px}
+  .stars .off{color:#3a4a5a}
+  .stage.lock{opacity:.4}
+  .stage.next{border-color:var(--accent)}
+  .row{display:flex;align-items:center;gap:12px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:10px}
+  .row .info{flex:1;min-width:0}
+  .row .name{font-weight:900;font-size:15px}
+  .row .desc{color:var(--sub);font-size:12px;margin-top:2px}
+  .pips{display:flex;gap:3px;margin-top:7px}
+  .pips span{flex:1;height:6px;border-radius:3px;background:#2a3a4a;max-width:22px}
+  .pips span.on{background:var(--accent2)}
+  .buy{background:var(--accent2);color:#04121d;font-weight:900;padding:10px 12px;border-radius:10px;min-width:92px;font-size:13px}
+  .buy:disabled{background:#2a3a4a;color:#6b7f92}
+  .icon{width:44px;height:44px;border-radius:10px;background:#0e161f;display:flex;align-items:center;justify-content:center;flex:none}
+  .note{color:var(--sub);font-size:12px;margin:4px 0 12px}
+  /* モーダル */
+  .modal{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(4,8,12,.72);z-index:30;padding:16px}
+  .modal.on{display:flex}
+  .card{background:var(--panel2);border:1px solid var(--line);border-radius:18px;padding:20px;width:100%;max-width:380px}
+  .card h3{margin:0 0 4px;font-size:20px;font-weight:900}
+  .card .sub{color:var(--sub);font-size:13px;margin-bottom:14px}
+  .kv{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line);font-size:14px}
+  .kv span:last-child{font-weight:800}
+  .btns{display:flex;gap:10px;margin-top:16px}
+  .btns button{flex:1;padding:13px 0;border-radius:12px;font-weight:900;font-size:15px}
+  .primary{background:var(--accent);color:#1a0d02}
+  .ghost{background:#2a3a4a;color:var(--text)}
+  .ammoSel{display:flex;gap:6px;margin-top:10px}
+  .ammoSel div{flex:1;background:var(--panel);border-radius:10px;padding:8px 4px;text-align:center;font-size:12px;color:var(--sub)}
+  .ammoSel b{display:block;color:var(--text);font-size:16px}
+  /* HUD */
+  #hud{position:fixed;inset:0;display:none;z-index:20;pointer-events:none}
+  #hud.on{display:block}
+  .hudTop{position:absolute;left:0;right:0;top:0;display:flex;align-items:center;gap:10px;padding:10px 12px;
+    background:linear-gradient(180deg,rgba(0,0,0,.6),rgba(0,0,0,0))}
+  .pill{background:rgba(10,16,22,.75);border:1px solid rgba(255,255,255,.12);border-radius:999px;padding:6px 12px;font-weight:800;font-size:13px;white-space:nowrap}
+  .pill.warn{color:var(--bad);border-color:rgba(255,90,90,.5)}
+  .grow{flex:1}
+  .hb{pointer-events:auto;background:rgba(10,16,22,.75);border:1px solid rgba(255,255,255,.15);border-radius:12px;font-weight:800;font-size:13px;padding:8px 12px}
+  .hudBottom{position:absolute;left:0;right:0;bottom:0;display:flex;align-items:flex-end;gap:10px;padding:12px;
+    background:linear-gradient(0deg,rgba(0,0,0,.55),rgba(0,0,0,0))}
+  .ammoBox{background:rgba(10,16,22,.8);border:1px solid rgba(255,255,255,.12);border-radius:14px;padding:8px 12px;min-width:120px}
+  .ammoBox .t{font-size:11px;color:var(--sub)}
+  .ammoBox .n{font-size:22px;font-weight:900;font-variant-numeric:tabular-nums}
+  .ammoBox .n small{font-size:13px;color:var(--sub)}
+  .mag{display:flex;gap:3px;margin-top:4px;flex-wrap:wrap;max-width:150px}
+  .mag i{width:6px;height:14px;border-radius:2px;background:var(--gold)}
+  .mag i.e{background:#3a4a5a}
+  .ctrl{pointer-events:auto;border-radius:50%;font-weight:900;display:flex;align-items:center;justify-content:center;text-align:center;line-height:1.1}
+  #bAmmo{width:68px;height:68px;background:rgba(255,209,102,.92);color:#2a1d00;font-size:13px}
+  .toast{position:absolute;left:50%;top:64px;transform:translateX(-50%);background:rgba(10,16,22,.85);border-radius:999px;padding:8px 16px;font-weight:800;font-size:14px;opacity:0;transition:opacity .2s;white-space:nowrap}
+  .toast.on{opacity:1}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<!-- タイトル -->
+<div id="title" class="screen on">
+  <h1>スコープ・<span>ストライク</span></h1>
+  <p>街に侵入したロボットとドローンを、遠くから撃ち抜け。</p>
+  <button class="big" id="btnStart">出撃準備</button>
+</div>
+
+<!-- ハブ（ミッション・強化・弾薬） -->
+<div id="hub" class="screen">
+  <div class="hubTop"><h2>作戦本部</h2><span class="coin"><i></i><span id="hubCoins">0</span></span></div>
+  <div class="wrap">
+    <div class="tabs">
+      <button class="tab on" data-tab="missions">ミッション</button>
+      <button class="tab" data-tab="upgrades">銃の強化</button>
+      <button class="tab" data-tab="shop">弾薬</button>
+    </div>
+    <div class="body" id="hubBody"></div>
+  </div>
+</div>
+
+<!-- ブリーフィング -->
+<div class="modal" id="brief"><div class="card" id="briefCard"></div></div>
+<!-- 結果 -->
+<div class="modal" id="result"><div class="card" id="resultCard"></div></div>
+<!-- 撤退の確認 -->
+<div class="modal" id="quit"><div class="card">
+  <h3>撤退しますか？</h3><div class="sub">このミッションは失敗になります。使った弾は戻りません。</div>
+  <div class="btns"><button class="ghost" id="quitNo">続ける</button><button class="primary" id="quitYes">撤退する</button></div>
+</div></div>
+
+<!-- プレイ中のHUD -->
+<div id="hud">
+  <div class="hudTop">
+    <span class="pill" id="hObj">撃破 0 / 0</span>
+    <span class="pill" id="hTime">0:00</span>
+    <span class="grow"></span>
+    <span class="pill" id="hCoins">+0</span>
+    <button class="hb" id="bQuit">撤退</button>
+  </div>
+  <div class="toast" id="toast"></div>
+  <div class="hudBottom">
+    <div class="ammoBox">
+      <div class="t" id="hAmmoName">通常弾</div>
+      <div class="n"><span id="hMag">0</span> <small>/ 残り <span id="hRes">0</span></small></div>
+      <div class="mag" id="hMagPips"></div>
+    </div>
+    <span class="grow"></span>
+    <button class="ctrl" id="bAmmo">弾<br>切替</button>
+  </div>
+</div>
+
+<script>
+"use strict";
+// ============================================================
+//  スコープ・ストライク — ステージ制スナイパーゲーム
+//  ロボットとドローンをスコープで狙撃。報酬で銃を強化し、弾薬を買う。
+//  画像ファイルなし：すべてコードで描画
+// ============================================================
+const cv = document.getElementById("c");
+const ctx = cv.getContext("2d");
+const FONT = 'system-ui,-apple-system,"Hiragino Sans","Noto Sans CJK JP","Noto Sans JP",sans-serif';
+const $ = id => document.getElementById(id);
+
+let W = 0, H = 0, DPR = 1;
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = innerWidth; H = innerHeight;
+  cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
+}
+addEventListener("resize", resize);
+resize();
+
+function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+function rand(a, b) { return a + Math.random() * (b - a); }
+function pick(a) { return a[Math.floor(Math.random() * a.length)]; }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function seeded(seed) { let s = seed; return () => { s = (s * 16807) % 2147483647; return (s - 1) / 2147483646; }; }
+
+// ---------- データ ----------
+const WW = 2600, WH = 900;   // ワールドの大きさ
+const STAGE_COUNT = 12;
+const AMMO = {
+  normal: { name: "通常弾", short: "通常", color: "#ffd166", mult: 1, pierce: false, blast: 0, pack: 10, price: 40, desc: "ふつうの弾。装甲には効きにくい" },
+  ap:     { name: "徹甲弾", short: "徹甲", color: "#7fd4ff", mult: 2, pierce: true, blast: 0, pack: 5, price: 120, desc: "威力2倍。装甲を無視する" },
+  blast:  { name: "炸裂弾", short: "炸裂", color: "#ff7a5a", mult: 1.5, pierce: false, blast: 70, pack: 3, price: 150, desc: "着弾地点のまわりにもダメージ" },
+};
+const AMMO_KEYS = ["normal", "ap", "blast"];
+const UPGRADES = [
+  { key: "power", name: "威力", desc: "1発のダメージが上がる", base: 80 },
+  { key: "zoom", name: "ズーム", desc: "スコープの倍率が上がる", base: 60 },
+  { key: "reward", name: "報酬", desc: "敵を倒したときのコインが増える", base: 70 },
+  { key: "bolt", name: "連射", desc: "次の弾を撃てるまでが短くなる", base: 70 },
+  { key: "mag", name: "弾倉", desc: "1回の装填で撃てる数が増える", base: 60 },
+];
+const MAX_UP = 10;
+const upCost = (u, lv) => Math.round(u.base * Math.pow(1.55, lv - 1) / 10) * 10;
+const gun = {
+  power: () => 1 + 0.35 * (S.up.power - 1),
+  zoom: () => 2.4 + 0.42 * (S.up.zoom - 1),
+  reward: () => 1 + 0.12 * (S.up.reward - 1),
+  bolt: () => 1.25 * Math.pow(0.87, S.up.bolt - 1),
+  reload: () => 2.4 * Math.pow(0.9, S.up.bolt - 1),
+  mag: () => 3 + (S.up.mag - 1),
+};
+const ENEMY = {
+  walker: { name: "偵察ロボ", hp: 2, armor: false, reward: 20 },
+  drone:  { name: "ドローン", hp: 1, armor: false, reward: 25 },
+  heavy:  { name: "装甲ロボ", hp: 6, armor: true, reward: 60 },
+};
+function stageDef(n) { // n = 1..12
+  const walkers = 3 + n, drones = n >= 2 ? Math.floor(n / 2) + 1 : 0, heavies = n >= 4 ? Math.floor((n - 2) / 2) : 0;
+  const total = walkers + drones + heavies;
+  const names = ["港の倉庫街", "夕暮れの高架", "駅前ビル群", "工業地帯", "旧市街", "電波塔", "湾岸タワー", "夜の繁華街", "発電所", "空中回廊", "中央管制区", "最終防衛線"];
+  return {
+    n, name: names[n - 1], walkers, drones, heavies, total,
+    quota: total - (n <= 3 ? 1 : 2) + (n === 12 ? 1 : 0),
+    time: 70 + n * 9,
+    speed: 1 + 0.06 * (n - 1),
+    maxAlive: Math.min(5, 2 + Math.floor(n / 3)),
+    night: n >= 8,
+    seed: 1000 + n * 77,
+  };
+}
+
+// ---------- セーブ ----------
+const KEY = "kusoge006-scope-strike";
+let S = { coins: 0, stars: [], ammo: { normal: 40, ap: 3, blast: 0 }, up: { power: 1, zoom: 1, reward: 1, bolt: 1, mag: 1 } };
+function load() {
+  try {
+    const d = JSON.parse(localStorage.getItem(KEY) || "null");
+    if (d && d.up && d.ammo) { S = Object.assign(S, d); S.up = Object.assign({ power: 1, zoom: 1, reward: 1, bolt: 1, mag: 1 }, d.up); if (d.up.stable && !d.up.reward) S.up.reward = d.up.stable; delete S.up.stable; S.ammo = Object.assign({ normal: 0, ap: 0, blast: 0 }, d.ammo); }
+  } catch (e) { }
+}
+function save() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { } }
+load();
+const unlocked = () => Math.min(STAGE_COUNT, S.stars.filter(x => x > 0).length + 1);
+
+// ---------- 音 ----------
+let AC = null, mute = false;
+function audio() {
+  if (!AC) { try { AC = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { AC = null; } }
+  if (AC && AC.state === "suspended") AC.resume();
+}
+function noise(dur, vol, freq, type = "lowpass") {
+  if (!AC || mute) return;
+  const t = AC.currentTime, n = Math.floor(AC.sampleRate * dur);
+  const b = AC.createBuffer(1, n, AC.sampleRate), d = b.getChannelData(0);
+  for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / n, 2.5);
+  const s = AC.createBufferSource(), f = AC.createBiquadFilter(), g = AC.createGain();
+  f.type = type; f.frequency.value = freq; g.gain.value = vol;
+  s.buffer = b; s.connect(f); f.connect(g); g.connect(AC.destination); s.start(t);
+}
+function beep(freq, dur, type = "square", vol = 0.04, slide = 0, delay = 0) {
+  if (!AC || mute) return;
+  const t = AC.currentTime + delay, o = AC.createOscillator(), g = AC.createGain();
+  o.type = type; o.frequency.setValueAtTime(freq, t);
+  if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(30, freq + slide), t + dur);
+  g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g); g.connect(AC.destination); o.start(t); o.stop(t + dur + 0.02);
+}
+const sndShot = () => { noise(0.5, 0.35, 900); beep(90, 0.25, "sine", 0.12, -40); };
+const sndBolt = () => { beep(1200, 0.03, "square", 0.03); beep(700, 0.04, "square", 0.03, 0, 0.08); };
+const sndHit = crit => { beep(crit ? 1400 : 900, 0.08, "square", 0.04); };
+const sndKill = () => { noise(0.45, 0.25, 400); beep(180, 0.3, "sawtooth", 0.04, -120); };
+const sndEmpty = () => beep(300, 0.05, "square", 0.03);
+const sndUi = () => beep(880, 0.05, "sine", 0.05);
+const sndBuy = () => { beep(660, 0.06, "triangle", 0.06); beep(990, 0.08, "triangle", 0.06, 0, 0.06); };
+const sndWin = () => [523, 659, 784, 1046].forEach((f, i) => beep(f, 0.18, "triangle", 0.06, 0, i * 0.11));
+const sndLose = () => beep(330, 0.7, "sine", 0.06, -200);
+
+// ---------- 街（ステージごとに変わる） ----------
+let city = null;
+function buildCity(seed, night) {
+  const r = seeded(seed);
+  const far = [], bld = [];
+  for (let x = -40; x < WW + 40;) { const w = 60 + r() * 120, h = 140 + r() * 220; far.push({ x, w, top: WH - 260 - h }); x += w + r() * 10; }
+  for (let x = -20; x < WW + 20;) {
+    const w = 140 + r() * 170, top = 330 + r() * 330;
+    const cols = ["#2b3846", "#33414f", "#3a3f4a", "#2f3a44", "#3b4552"];
+    const b = { x, w, top, col: cols[Math.floor(r() * cols.length)], win: [], antenna: r() < 0.3, tank: r() < 0.25 };
+    for (let wy = top + 24; wy < WH - 20; wy += 26) for (let wx = x + 14; wx < x + w - 18; wx += 22) {
+      const lit = r() < (night ? 0.45 : 0.18);
+      b.win.push(wx, wy, lit ? 1 : 0);
+    }
+    bld.push(b);
+    x += w + 8 + r() * 24;
+  }
+  return { far, bld, night };
+}
+
+// ---------- 状態 ----------
+let mode = "title";       // title / hub / play
+let tab = "missions";
+let stage = null;         // 進行中のステージ
+let cam = { x: WW / 2, y: WH / 2 };
+let scoped = false, zoomNow = 1;
+let enemies = [], fx = [], tracers = [];
+let ammoType = "normal", inMag = 0, boltT = 0, reloadT = 0;
+let time = 0, swayT = 0;
+let kills = 0, shots = 0, hits = 0, crits = 0, earned = 0, escaped = 0, spawned = 0, spawnT = 0, timeLeft = 0;
+let ended = false, flash = 0, recoil = 0;
+let spawnQueue = [];
+
+// 通常の画面は街を少し大きく映し、上下にも見回せるようにする
+function baseZoom() { return Math.max(H / WH * 1.3, Math.min(W / 900, H / 600) * 0.62); }
+function viewZoom() { return baseZoom() * zoomNow; }
+function aimPoint() { return { x: cam.x, y: cam.y }; }
+function toScreen(x, y) { const z = viewZoom(); return { x: W / 2 + (x - cam.x) * z, y: H / 2 + (y - cam.y) * z }; }
+function clampCam() {
+  // スコープ中は街のはしまで狙えるようにする
+  if (scoped) { cam.x = clamp(cam.x, 30, WW - 30); cam.y = clamp(cam.y, 60, WH - 30); return; }
+  const z = viewZoom();
+  const hw = W / 2 / z, hh = H / 2 / z;
+  cam.x = clamp(cam.x, Math.min(hw, WW / 2), Math.max(WW - hw, WW / 2));
+  cam.y = clamp(cam.y, Math.min(hh, WH / 2), Math.max(WH - hh, WH / 2));
+}
+
+// ---------- 敵 ----------
+function spawnEnemy(type) {
+  const sp = stage.speed;
+  if (type === "drone") {
+    const dir = Math.random() < 0.5 ? 1 : -1;
+    enemies.push({ type, hp: ENEMY.drone.hp, max: ENEMY.drone.hp, x: dir > 0 ? -60 : WW + 60, y: rand(140, 420), baseY: 0, dir,
+      vx: rand(50, 80) * sp * dir, ph: rand(0, 6), amp: rand(15, 35), w: 54, h: 18, hitT: 0, dead: 0 });
+    enemies[enemies.length - 1].baseY = enemies[enemies.length - 1].y;
+    return;
+  }
+  const roofs = city.bld.filter(b => b.w > (type === "heavy" ? 200 : 150) && b.x > 40 && b.x + b.w < WW - 40);
+  const b = pick(roofs);
+  const dir = Math.random() < 0.5 ? 1 : -1;
+  const heavy = type === "heavy";
+  const e = { type, hp: ENEMY[type].hp, max: ENEMY[type].hp, x: dir > 0 ? b.x + 30 : b.x + b.w - 30, y: b.top, x1: b.x + 30, x2: b.x + b.w - 30, dir,
+    v: (heavy ? 22 : rand(36, 52)) * sp, w: heavy ? 64 : 38, h: heavy ? 86 : 62, stay: rand(20, 28) / sp + (heavy ? 6 : 0),
+    pause: 0, step: rand(0, 6), hitT: 0, dead: 0, warp: 1 };
+  enemies.push(e);
+}
+function hitBoxes(e) {
+  // [x, y, w, h, crit]
+  if (e.type === "drone") return [[e.x - 8, e.y - 8, 16, 14, true], [e.x - e.w / 2, e.y - e.h / 2, e.w, e.h, false]];
+  const heavy = e.type === "heavy";
+  const top = e.y - e.h;
+  const core = heavy ? [e.x - 8, top + 30, 16, 16, true] : [e.x - 6, top + 26, 12, 12, true];
+  return [core, [e.x - e.w / 2, top, e.w, e.h, false]];
+}
+
+// ---------- 射撃 ----------
+function fire() {
+  if (mode !== "play" || ended) return;
+  if (reloadT > 0 || boltT > 0) { sndEmpty(); toast(reloadT > 0 ? "装填中…" : "次の弾を準備中…"); return; }
+  if (inMag <= 0) { startReload(); return; }
+  inMag--; shots++;
+  boltT = gun.bolt();
+  recoil = 1; flash = 0.08;
+  sndShot();
+  setTimeout(() => { if (mode === "play") sndBolt(); }, 350);
+  const a = aimPoint();
+  const am = AMMO[ammoType];
+  tracers.push({ x: a.x, y: a.y, t: 0.25 });
+  let hitAny = false;
+  const dmgBase = gun.power() * am.mult;
+  // 一番手前（後から出た）の敵から判定
+  for (let i = enemies.length - 1; i >= 0; i--) {
+    const e = enemies[i]; if (e.dead) continue;
+    for (const [bx, by, bw, bh, crit] of hitBoxes(e)) {
+      if (a.x >= bx && a.x <= bx + bw && a.y >= by && a.y <= by + bh) {
+        damage(e, dmgBase * (crit ? 2.5 : 1), crit, am.pierce);
+        hitAny = true; if (crit) crits++;
+        break;
+      }
+    }
+    if (hitAny) break;
+  }
+  if (am.blast) {
+    fx.push({ kind: "boom", x: a.x, y: a.y, r: am.blast, t: 0.5 });
+    noise(0.4, 0.3, 300);
+    for (const e of enemies) {
+      if (e.dead) continue;
+      const cy = e.type === "drone" ? e.y : e.y - e.h / 2;
+      if (Math.hypot(e.x - a.x, cy - a.y) < am.blast + e.w / 2) { damage(e, gun.power() * 1, false, false); hitAny = true; }
+    }
+  } else if (!hitAny) {
+    fx.push({ kind: "dust", x: a.x, y: a.y, t: 0.4 });
+  }
+  if (hitAny) hits++;
+  if (inMag <= 0) setTimeout(() => { if (mode === "play" && !ended && inMag <= 0) startReload(); }, 300);
+  updateHud();
+}
+function damage(e, dmg, crit, pierce) {
+  if (e.dead) return;
+  const real = e.type === "heavy" && !pierce ? dmg * 0.4 : dmg;
+  e.hp -= real; e.hitT = 0.15;
+  sndHit(crit);
+  const p = e.type === "drone" ? { x: e.x, y: e.y } : { x: e.x, y: e.y - e.h / 2 };
+  fx.push({ kind: "spark", x: p.x, y: p.y - (crit ? 10 : 0), t: 0.3, crit });
+  if (crit) toast(e.type === "heavy" && !pierce ? "弱点に命中（装甲で軽減）" : "弱点に命中！");
+  else if (e.type === "heavy" && !pierce) toast("装甲で弾かれた…徹甲弾が有効");
+  if (e.hp <= 0) {
+    e.dead = 0.001; kills++;
+    const reward = Math.round(ENEMY[e.type].reward * (crit ? 1.5 : 1) * gun.reward());
+    earned += reward;
+    fx.push({ kind: "boom", x: p.x, y: p.y, r: e.type === "heavy" ? 70 : 45, t: 0.6 });
+    fx.push({ kind: "text", x: p.x, y: p.y - 30, text: `+${reward}`, t: 1 });
+    sndKill();
+    if (kills >= stage.quota) setTimeout(() => endStage(true), 900);
+  }
+  updateHud();
+}
+function startReload() {
+  if (reloadT > 0) return;
+  const have = S.ammo[ammoType];
+  if (have <= 0) {
+    const other = AMMO_KEYS.find(k => S.ammo[k] > 0);
+    if (other) { switchAmmo(other); return; }
+    toast("弾がない！");
+    sndEmpty();
+    if (!ended) setTimeout(() => { if (!ended && inMag <= 0 && AMMO_KEYS.every(k => S.ammo[k] <= 0)) endStage(false, "弾切れ"); }, 900);
+    return;
+  }
+  reloadT = gun.reload();
+  beep(500, 0.06, "square", 0.03);
+  updateHud();
+}
+function finishReload() {
+  const n = Math.min(gun.mag(), S.ammo[ammoType]);
+  S.ammo[ammoType] -= n; inMag = n;
+  beep(900, 0.05, "square", 0.04);
+  updateHud();
+}
+function switchAmmo(to) {
+  if (mode !== "play" || ended) return;
+  // 弾倉の残りは持ち弾に戻す
+  S.ammo[ammoType] += inMag; inMag = 0;
+  if (!to) {
+    const i = AMMO_KEYS.indexOf(ammoType);
+    for (let k = 1; k <= 3; k++) { const c = AMMO_KEYS[(i + k) % 3]; if (S.ammo[c] > 0) { to = c; break; } }
+    if (!to) to = ammoType;
+  }
+  ammoType = to;
+  reloadT = 0; startReload();
+  toast(`${AMMO[ammoType].name}に切り替え`);
+}
+function enterScope(px, py) {
+  // 押した場所に寄る
+  const z = viewZoom();
+  cam.x += (px - W / 2) / z; cam.y += (py - H / 2) / z;
+  scoped = true;
+  clampCam();
+  beep(1500, 0.04, "sine", 0.04);
+}
+
+// ---------- ステージ ----------
+function startStage(n) {
+  stage = stageDef(n);
+  city = buildCity(stage.seed, stage.night);
+  enemies = []; fx = []; tracers = [];
+  kills = 0; shots = 0; hits = 0; crits = 0; earned = 0; escaped = 0; spawned = 0; spawnT = 1.2;
+  timeLeft = stage.time; ended = false;
+  spawnQueue = [];
+  for (let i = 0; i < stage.walkers; i++) spawnQueue.push("walker");
+  for (let i = 0; i < stage.drones; i++) spawnQueue.push("drone");
+  for (let i = 0; i < stage.heavies; i++) spawnQueue.push("heavy");
+  for (let i = spawnQueue.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [spawnQueue[i], spawnQueue[j]] = [spawnQueue[j], spawnQueue[i]]; }
+  // 最初は必ず偵察ロボ
+  const wi = spawnQueue.indexOf("walker"); if (wi > 0) { spawnQueue.splice(wi, 1); spawnQueue.unshift("walker"); }
+  cam = { x: WW / 2, y: WH * 0.55 };
+  scoped = false; zoomNow = 1; touch = null;
+  ammoType = S.ammo.normal > 0 ? "normal" : (AMMO_KEYS.find(k => S.ammo[k] > 0) || "normal");
+  inMag = 0; boltT = 0; reloadT = 0;
+  finishReload();
+  mode = "play";
+  show("hud");
+  updateHud();
+  toast(`${stage.name}：${stage.quota}体を撃破せよ`);
+}
+function endStage(win, reason) {
+  if (ended) return;
+  ended = true;
+  // 弾倉に残った弾は持ち弾に戻す
+  S.ammo[ammoType] += inMag; inMag = 0;
+  const acc = shots ? hits / shots : 0;
+  let stars = 0, bonus = 0;
+  if (win) {
+    stars = acc >= 0.8 ? 3 : acc >= 0.6 ? 2 : 1;
+    bonus = 60 + stage.n * 25 + (stars - 1) * 40;
+    const prev = S.stars[stage.n - 1] || 0;
+    if (stars > prev) S.stars[stage.n - 1] = stars;
+  }
+  const gain = earned + bonus;
+  S.coins += gain;
+  if (AMMO_KEYS.every(k => S.ammo[k] <= 0) && S.coins < AMMO.normal.price) { S.ammo.normal += 10; reason = (reason ? reason + "・" : "") + "通常弾10発を支給"; }
+  save();
+  win ? sndWin() : sndLose();
+  setTimeout(() => {
+    $("resultCard").innerHTML = `
+      <h3 style="color:${win ? "var(--good)" : "var(--bad)"}">${win ? "ミッション成功" : "ミッション失敗"}</h3>
+      <div class="sub">ステージ${stage.n}「${stage.name}」${reason ? "　" + reason : ""}</div>
+      ${win ? `<div class="stars" style="font-size:28px;text-align:center;margin:4px 0 10px">${starStr(stars)}</div>` : ""}
+      <div class="kv"><span>撃破</span><span>${kills} / ${stage.quota}</span></div>
+      <div class="kv"><span>命中率</span><span>${Math.round(acc * 100)}%（${hits}/${shots}）</span></div>
+      <div class="kv"><span>弱点命中</span><span>${crits}</span></div>
+      <div class="kv"><span>撃破報酬</span><span class="coin"><i></i>${earned}</span></div>
+      ${win ? `<div class="kv"><span>クリアボーナス</span><span class="coin"><i></i>${bonus}</span></div>` : ""}
+      <div class="kv"><span>合計</span><span class="coin"><i></i>${gain}</span></div>
+      <div class="btns"><button class="ghost" id="rHub">作戦本部へ</button>
+      ${win && stage.n < STAGE_COUNT ? `<button class="primary" id="rNext">次のステージ</button>` : `<button class="primary" id="rRetry">もう一度</button>`}</div>`;
+    show("result");
+    $("rHub").onclick = () => { sndUi(); goHub(); };
+    if ($("rNext")) $("rNext").onclick = () => { sndUi(); openBrief(stage.n + 1); };
+    if ($("rRetry")) $("rRetry").onclick = () => { sndUi(); openBrief(stage.n); };
+  }, win ? 700 : 400);
+}
+const starStr = n => [1, 2, 3].map(i => i <= n ? "★" : `<span class="off">★</span>`).join("");
+
+// ---------- 画面の切り替え ----------
+function show(id) {
+  for (const s of ["title", "hub"]) $(s).classList.toggle("on", s === id);
+  $("hud").classList.toggle("on", id === "hud" || (mode === "play" && ["result", "quit"].includes(id)));
+  for (const m of ["brief", "result", "quit"]) $(m).classList.toggle("on", m === id);
+}
+function goHub() {
+  mode = "hub"; stage = null;
+  if (!city) city = buildCity(1077, false);
+  show("hub");
+  renderHub();
+}
+function renderHub() {
+  $("hubCoins").textContent = S.coins;
+  document.querySelectorAll(".tab").forEach(t => t.classList.toggle("on", t.dataset.tab === tab));
+  const body = $("hubBody");
+  if (tab === "missions") {
+    const un = unlocked();
+    let h = `<div class="note">ステージを選んで出撃。命中率が高いほど★が増え、ボーナスも上がります。</div><div class="grid">`;
+    for (let n = 1; n <= STAGE_COUNT; n++) {
+      const d = stageDef(n), st = S.stars[n - 1] || 0, lock = n > un;
+      h += `<button class="stage ${lock ? "lock" : ""} ${n === un && !st ? "next" : ""}" data-n="${n}" ${lock ? "disabled" : ""}>
+        <b>STAGE ${n}</b><strong>${lock ? "未開放" : d.name}</strong><div class="stars">${starStr(st)}</div></button>`;
+    }
+    body.innerHTML = h + "</div>";
+    body.querySelectorAll(".stage").forEach(b => b.onclick = () => { sndUi(); openBrief(+b.dataset.n); });
+  } else if (tab === "upgrades") {
+    let h = `<div class="note">報酬のコインで銃を強化します。各項目 Lv${MAX_UP} まで。</div>`;
+    for (const u of UPGRADES) {
+      const lv = S.up[u.key], max = lv >= MAX_UP, cost = upCost(u, lv);
+      h += `<div class="row"><div class="icon">${upIcon(u.key)}</div><div class="info"><div class="name">${u.name}　Lv${lv}</div>
+        <div class="desc">${u.desc}（${upValue(u.key, lv)}${max ? "" : " → " + upValue(u.key, lv + 1)}）</div>
+        <div class="pips">${Array.from({ length: MAX_UP }, (_, i) => `<span class="${i < lv ? "on" : ""}"></span>`).join("")}</div></div>
+        <button class="buy" data-k="${u.key}" ${max || S.coins < cost ? "disabled" : ""}>${max ? "最大" : `<span class="coin" style="color:inherit"><i></i>${cost}</span>`}</button></div>`;
+    }
+    body.innerHTML = h;
+    body.querySelectorAll(".buy").forEach(b => b.onclick = () => {
+      const u = UPGRADES.find(x => x.key === b.dataset.k), cost = upCost(u, S.up[u.key]);
+      if (S.coins >= cost && S.up[u.key] < MAX_UP) { S.coins -= cost; S.up[u.key]++; save(); sndBuy(); renderHub(); }
+    });
+  } else {
+    let h = `<div class="note">ミッションで使う弾薬を買います。弾が尽きるとミッション失敗です。</div>`;
+    for (const k of AMMO_KEYS) {
+      const a = AMMO[k];
+      h += `<div class="row"><div class="icon">${ammoIcon(k)}</div><div class="info"><div class="name">${a.name}　<span style="color:var(--sub);font-weight:700">所持 ${S.ammo[k]}発</span></div>
+        <div class="desc">${a.desc}</div></div>
+        <button class="buy" data-k="${k}" ${S.coins < a.price ? "disabled" : ""}>${a.pack}発 <span class="coin" style="color:inherit"><i></i>${a.price}</span></button></div>`;
+    }
+    body.innerHTML = h;
+    body.querySelectorAll(".buy").forEach(b => b.onclick = () => {
+      const a = AMMO[b.dataset.k];
+      if (S.coins >= a.price) { S.coins -= a.price; S.ammo[b.dataset.k] += a.pack; save(); sndBuy(); renderHub(); }
+    });
+  }
+}
+function upValue(k, lv) {
+  const keep = S.up[k]; S.up[k] = lv;
+  const v = k === "power" ? gun.power().toFixed(2) : k === "zoom" ? `${gun.zoom().toFixed(1)}倍` : k === "reward" ? `${Math.round(gun.reward() * 100)}%` :
+    k === "bolt" ? `${gun.bolt().toFixed(2)}秒` : `${gun.mag()}発`;
+  S.up[k] = keep; return v;
+}
+function upIcon(k) {
+  const c = "#3fb6ff";
+  const m = {
+    power: `<path d="M13 3 6 13h5l-1 8 7-10h-5z" fill="${c}"/>`,
+    zoom: `<circle cx="11" cy="11" r="6" fill="none" stroke="${c}" stroke-width="2.4"/><path d="m15.5 15.5 5 5" stroke="${c}" stroke-width="2.6" stroke-linecap="round"/>`,
+    reward: `<circle cx="12" cy="12" r="8.5" fill="none" stroke="${c}" stroke-width="2.2"/><path d="M12 7v10M9.5 9.5h4a1.8 1.8 0 0 1 0 3.5h-3a1.8 1.8 0 0 0 0 3.5h4" fill="none" stroke="${c}" stroke-width="1.8" stroke-linecap="round"/>`,
+    bolt: `<path d="M4 12a8 8 0 0 1 14-5M20 12a8 8 0 0 1-14 5" fill="none" stroke="${c}" stroke-width="2.4" stroke-linecap="round"/><path d="M18 3v4h-4M6 21v-4h4" fill="none" stroke="${c}" stroke-width="2.4"/>`,
+    mag: `<rect x="7" y="3" width="10" height="18" rx="2" fill="none" stroke="${c}" stroke-width="2.2"/><path d="M10 7h4M10 11h4M10 15h4" stroke="${c}" stroke-width="2"/>`,
+  };
+  return `<svg width="26" height="26" viewBox="0 0 24 24">${m[k]}</svg>`;
+}
+function ammoIcon(k) {
+  const c = AMMO[k].color;
+  return `<svg width="26" height="26" viewBox="0 0 24 24"><path d="M9 21V9c0-3 3-6 3-6s3 3 3 6v12z" fill="${c}"/><rect x="8" y="17" width="8" height="4" rx="1" fill="#c9901a"/></svg>`;
+}
+function openBrief(n) {
+  const d = stageDef(n);
+  const total = AMMO_KEYS.reduce((s, k) => s + S.ammo[k], 0);
+  $("briefCard").innerHTML = `
+    <h3>STAGE ${n}　${d.name}</h3>
+    <div class="sub">${d.night ? "夜間作戦。" : ""}制限時間内に目標数を撃破せよ。</div>
+    <div class="kv"><span>目標</span><span>${d.quota}体撃破（出現 ${d.total}体）</span></div>
+    <div class="kv"><span>制限時間</span><span>${d.time}秒</span></div>
+    <div class="kv"><span>敵</span><span>偵察ロボ${d.walkers}${d.drones ? "・ドローン" + d.drones : ""}${d.heavies ? "・装甲ロボ" + d.heavies : ""}</span></div>
+    ${d.heavies ? `<div class="note" style="margin:8px 0 0">装甲ロボには徹甲弾が有効です。</div>` : ""}
+    <div class="ammoSel">${AMMO_KEYS.map(k => `<div><b style="color:${AMMO[k].color}">${S.ammo[k]}</b>${AMMO[k].short}</div>`).join("")}</div>
+    ${total < d.quota ? `<div class="note" style="color:var(--bad);margin:8px 0 0">弾が足りないかもしれません。弾薬タブで補充を。</div>` : ""}
+    <div class="btns"><button class="ghost" id="bCancel">もどる</button><button class="primary" id="bGo" ${total <= 0 ? "disabled" : ""}>出撃</button></div>`;
+  show("brief");
+  $("bCancel").onclick = () => { sndUi(); goHub(); };
+  $("bGo").onclick = () => { sndUi(); audio(); startStage(n); };
+}
+
+// ---------- HUD ----------
+let toastT = 0;
+function toast(t) { $("toast").textContent = t; $("toast").classList.add("on"); toastT = 1.8; }
+function updateHud() {
+  if (!stage) return;
+  $("hObj").textContent = `撃破 ${kills} / ${stage.quota}`;
+  $("hCoins").innerHTML = `<span class="coin"><i></i>+${earned}</span>`;
+  $("hAmmoName").textContent = AMMO[ammoType].name + (reloadT > 0 ? "　装填中…" : "");
+  $("hAmmoName").style.color = AMMO[ammoType].color;
+  $("hMag").textContent = inMag;
+  $("hRes").textContent = S.ammo[ammoType];
+  const m = gun.mag();
+  $("hMagPips").innerHTML = Array.from({ length: m }, (_, i) => `<i class="${i < inMag ? "" : "e"}"></i>`).join("");
+}
+
+// ---------- 入力 ----------
+// ドラッグ = 見回す / 長押し = スコープ / スコープ中に動かす = 狙う / 離す = 発射
+const HOLD = 0.16;
+let touch = null;
+cv.addEventListener("pointerdown", e => {
+  audio();
+  if (mode !== "play" || ended || touch) return;
+  touch = { id: e.pointerId, x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY, t: 0, mode: "wait" };
+  cv.setPointerCapture(e.pointerId);
+});
+cv.addEventListener("pointermove", e => {
+  if (!touch || e.pointerId !== touch.id) return;
+  const dx = e.clientX - touch.x, dy = e.clientY - touch.y;
+  touch.x = e.clientX; touch.y = e.clientY;
+  if (touch.mode === "wait" && Math.hypot(e.clientX - touch.sx, e.clientY - touch.sy) > 10) touch.mode = "pan";
+  const z = viewZoom();
+  if (touch.mode === "pan") { cam.x -= dx / z; cam.y -= dy / z; }
+  else if (touch.mode === "scope") { cam.x += dx / z; cam.y += dy / z; }
+  clampCam();
+});
+cv.addEventListener("pointerup", e => {
+  if (!touch || e.pointerId !== touch.id) return;
+  const m = touch.mode;
+  touch = null;
+  if (m === "scope") { if (!ended) fire(); scoped = false; }
+  else if (m === "wait") toast("長押しでスコープ");
+});
+cv.addEventListener("pointercancel", () => { touch = null; scoped = false; });
+cv.addEventListener("contextmenu", e => e.preventDefault());
+addEventListener("keydown", e => {
+  if (mode !== "play" || ended) return;
+  if (e.key === "q") switchAmmo();
+  if (e.key === "r" && inMag < gun.mag()) { S.ammo[ammoType] += inMag; inMag = 0; startReload(); }
+});
+function tapBtn(id, fn) { $(id).addEventListener("pointerdown", e => { e.preventDefault(); e.stopPropagation(); audio(); fn(); }); }
+tapBtn("bAmmo", () => switchAmmo());
+tapBtn("bQuit", () => { if (!ended) show("quit"); });
+$("quitNo").onclick = () => show("hud");
+$("quitYes").onclick = () => { show("hud"); endStage(false, "撤退"); };
+$("btnStart").onclick = () => { audio(); sndUi(); goHub(); };
+document.querySelectorAll(".tab").forEach(t => t.onclick = () => { sndUi(); tab = t.dataset.tab; renderHub(); });
+
+// ---------- 更新 ----------
+function update(dt) {
+  time += dt;
+  if (toastT > 0) { toastT -= dt; if (toastT <= 0) $("toast").classList.remove("on"); }
+  for (const f of fx) f.t -= dt;
+  fx = fx.filter(f => f.t > 0);
+  for (const t of tracers) t.t -= dt;
+  tracers = tracers.filter(t => t.t > 0);
+  flash = Math.max(0, flash - dt);
+  recoil = Math.max(0, recoil - dt * 4);
+  const target = scoped ? gun.zoom() : 1;
+  zoomNow = lerp(zoomNow, target, Math.min(1, dt * 10));
+  if (mode !== "play") { cam.x = WW / 2 + Math.sin(time * 0.05) * 600; cam.y = WH * 0.55; zoomNow = 1; return; }
+  clampCam();
+  swayT += dt;
+  if (boltT > 0) boltT = Math.max(0, boltT - dt);
+  if (ended) reloadT = 0;
+  if (reloadT > 0) { reloadT -= dt; if (reloadT <= 0) { reloadT = 0; finishReload(); } }
+  if (touch && touch.mode === "wait" && !ended) { touch.t += dt; if (touch.t >= HOLD) { touch.mode = "scope"; enterScope(touch.x, touch.y); } }
+
+  if (!ended) {
+    timeLeft -= dt;
+    const m = Math.max(0, Math.ceil(timeLeft));
+    $("hTime").textContent = `${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}`;
+    $("hTime").classList.toggle("warn", timeLeft < 15);
+    if (timeLeft <= 0) { endStage(false, "時間切れ"); }
+    // 出現
+    const alive = enemies.filter(e => !e.dead).length;
+    spawnT -= dt;
+    if (spawnQueue.length && spawnT <= 0 && alive < stage.maxAlive) {
+      spawnEnemy(spawnQueue.shift()); spawned++;
+      spawnT = rand(2.2, 4.2) / stage.speed;
+    }
+    // もう目標に届かない
+    const remain = spawnQueue.length + enemies.filter(e => !e.dead).length;
+    if (kills + remain < stage.quota) endStage(false, "目標に逃げられた");
+  }
+  for (const e of enemies) {
+    if (e.hitT > 0) e.hitT -= dt;
+    if (e.dead) { e.dead += dt; continue; }
+    if (e.type === "drone") {
+      e.x += e.vx * dt; e.ph += dt * 1.6;
+      e.y = e.baseY + Math.sin(e.ph) * e.amp;
+      if ((e.dir > 0 && e.x > WW + 80) || (e.dir < 0 && e.x < -80)) { e.gone = true; escaped++; }
+    } else {
+      if (e.warp > 0) { e.warp = Math.max(0, e.warp - dt * 1.8); continue; }
+      e.stay -= dt;
+      if (e.stay <= 0) { e.leaving = (e.leaving || 0) + dt * 1.8; if (e.leaving >= 1) { e.gone = true; escaped++; } continue; }
+      if (e.pause > 0) { e.pause -= dt; continue; }
+      e.x += e.v * e.dir * dt; e.step += dt * (e.type === "heavy" ? 4 : 7);
+      if (e.x > e.x2) { e.x = e.x2; e.dir = -1; e.pause = rand(0.8, 1.8); }
+      if (e.x < e.x1) { e.x = e.x1; e.dir = 1; e.pause = rand(0.8, 1.8); }
+      if (Math.random() < dt * 0.15) e.pause = rand(1, 2.2);
+    }
+  }
+  const before = enemies.length;
+  enemies = enemies.filter(e => !e.gone && !(e.dead > 1));
+  if (enemies.length < before && !ended && escaped) updateHud();
+}
+
+// ---------- 描画 ----------
+function drawWorld() {
+  const z = viewZoom();
+  ctx.save();
+  ctx.translate(W / 2, H / 2);
+  ctx.scale(z, z);
+  ctx.translate(-cam.x, -cam.y + recoil * 8 / zoomNow);
+  const night = city.night;
+  // 空
+  const sky = ctx.createLinearGradient(0, 0, 0, WH);
+  if (night) { sky.addColorStop(0, "#070b16"); sky.addColorStop(0.6, "#1a2140"); sky.addColorStop(1, "#3a2a48"); }
+  else { sky.addColorStop(0, "#2a3f66"); sky.addColorStop(0.55, "#d6845a"); sky.addColorStop(1, "#f2b56b"); }
+  ctx.fillStyle = sky; ctx.fillRect(-200, -200, WW + 400, WH + 400);
+  if (night) {
+    ctx.fillStyle = "#f2f0e0"; ctx.beginPath(); ctx.arc(WW * 0.72, 140, 42, 0, 7); ctx.fill();
+    ctx.fillStyle = "rgba(255,255,255,0.7)";
+    const r = seeded(9);
+    for (let i = 0; i < 120; i++) ctx.fillRect(r() * WW, r() * 420, 2, 2);
+  } else {
+    const sg = ctx.createRadialGradient(WW * 0.3, 470, 10, WW * 0.3, 470, 260);
+    sg.addColorStop(0, "rgba(255,236,190,1)"); sg.addColorStop(0.25, "rgba(255,190,120,0.7)"); sg.addColorStop(1, "rgba(255,150,90,0)");
+    ctx.fillStyle = sg; ctx.fillRect(WW * 0.3 - 260, 210, 520, 520);
+  }
+  // 遠くのビル
+  ctx.fillStyle = night ? "#141a2c" : "#7a5a6a";
+  for (const b of city.far) ctx.fillRect(b.x, b.top, b.w, WH - b.top);
+  // 見えている範囲だけ描く
+  const vx1 = cam.x - W / 2 / z - 50, vx2 = cam.x + W / 2 / z + 50;
+  for (const b of city.bld) {
+    if (b.x + b.w < vx1 || b.x > vx2) continue;
+    ctx.fillStyle = night ? "#1c2333" : b.col;
+    ctx.fillRect(b.x, b.top, b.w, WH - b.top + 10);
+    ctx.fillStyle = night ? "#262f44" : "rgba(255,255,255,0.08)";
+    ctx.fillRect(b.x, b.top, b.w, 8);
+    if (b.antenna) { ctx.fillStyle = "#555"; ctx.fillRect(b.x + b.w * 0.7, b.top - 60, 4, 60); ctx.fillStyle = (Math.sin(time * 3) > 0) ? "#ff4040" : "#601010"; ctx.beginPath(); ctx.arc(b.x + b.w * 0.7 + 2, b.top - 62, 4, 0, 7); ctx.fill(); }
+    if (b.tank) { ctx.fillStyle = night ? "#2a3245" : "#4a5562"; ctx.fillRect(b.x + 20, b.top - 30, 34, 30); ctx.fillRect(b.x + 18, b.top - 34, 38, 6); }
+    const wv = b.win;
+    for (let i = 0; i < wv.length; i += 3) {
+      ctx.fillStyle = wv[i + 2] ? (night ? "#ffd98a" : "rgba(255,220,160,0.55)") : (night ? "#121826" : "rgba(10,20,30,0.35)");
+      ctx.fillRect(wv[i], wv[i + 1], 12, 14);
+    }
+  }
+  // 敵
+  for (const e of enemies) drawEnemy(e);
+  // 効果
+  for (const f of fx) {
+    if (f.kind === "boom") {
+      const k = 1 - f.t / 0.6;
+      ctx.fillStyle = `rgba(255,${Math.round(200 - k * 120)},80,${(1 - k) * 0.9})`;
+      ctx.beginPath(); ctx.arc(f.x, f.y, f.r * (0.4 + k * 0.8), 0, 7); ctx.fill();
+      ctx.strokeStyle = `rgba(255,240,200,${1 - k})`; ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.arc(f.x, f.y, f.r * (0.5 + k), 0, 7); ctx.stroke();
+    } else if (f.kind === "spark") {
+      ctx.strokeStyle = f.crit ? `rgba(255,80,80,${f.t / 0.3})` : `rgba(255,240,180,${f.t / 0.3})`; ctx.lineWidth = 3;
+      for (let i = 0; i < 6; i++) { const a = i * 1.05, r1 = 6, r2 = 6 + (1 - f.t / 0.3) * 18; ctx.beginPath(); ctx.moveTo(f.x + Math.cos(a) * r1, f.y + Math.sin(a) * r1); ctx.lineTo(f.x + Math.cos(a) * r2, f.y + Math.sin(a) * r2); ctx.stroke(); }
+    } else if (f.kind === "dust") {
+      ctx.fillStyle = `rgba(200,190,170,${f.t / 0.4 * 0.7})`;
+      ctx.beginPath(); ctx.arc(f.x, f.y, 6 + (1 - f.t / 0.4) * 10, 0, 7); ctx.fill();
+    } else if (f.kind === "text") {
+      ctx.font = `900 ${Math.round(28 / zoomNow + 10)}px ${FONT}`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.globalAlpha = clamp(f.t * 2, 0, 1);
+      ctx.lineWidth = 4 / zoomNow + 1; ctx.strokeStyle = "rgba(0,0,0,0.6)"; ctx.strokeText(f.text, f.x, f.y - (1 - f.t) * 30);
+      ctx.fillStyle = "#ffd166"; ctx.fillText(f.text, f.x, f.y - (1 - f.t) * 30);
+      ctx.globalAlpha = 1;
+    }
+  }
+  ctx.restore();
+}
+
+function drawEnemy(e) {
+  ctx.save();
+  let alpha = 1;
+  if (e.dead) alpha = Math.max(0, 1 - e.dead);
+  if (e.warp > 0) alpha = 1 - e.warp;
+  if (e.leaving) alpha = Math.max(0, 1 - e.leaving);
+  ctx.globalAlpha = alpha;
+  const flashHit = e.hitT > 0;
+  if (e.type === "drone") {
+    ctx.translate(e.x, e.y);
+    if (e.dead) { ctx.translate(0, e.dead * 80); ctx.rotate(e.dead * 3); }
+    ctx.fillStyle = flashHit ? "#fff" : "#2d343c";
+    ctx.fillRect(-e.w / 2, -3, e.w, 6);
+    for (const sx of [-e.w / 2, e.w / 2]) {
+      ctx.fillRect(sx - 2, -10, 4, 8);
+      ctx.fillStyle = "rgba(200,220,240,0.55)";
+      const sp = Math.sin(time * 60) * 12;
+      ctx.fillRect(sx - 12 + sp * 0.2, -12, 24 - Math.abs(sp) * 0.4, 2.5);
+      ctx.fillStyle = flashHit ? "#fff" : "#2d343c";
+    }
+    ctx.fillStyle = flashHit ? "#fff" : "#3a434d";
+    ctx.beginPath(); ctx.ellipse(0, 0, 11, 9, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = Math.sin(time * 8) > 0 ? "#ff3b3b" : "#a01818";
+    ctx.beginPath(); ctx.arc(0, 1, 4, 0, 7); ctx.fill();
+    ctx.restore();
+    return;
+  }
+  const heavy = e.type === "heavy";
+  const s = heavy ? 1.4 : 1;
+  ctx.translate(e.x, e.y);
+  if (e.dead) ctx.rotate(e.dead * 0.6 * (e.dir || 1));
+  const legA = e.pause > 0 || e.warp > 0 ? 0 : Math.sin(e.step) * 6 * s;
+  const body = flashHit ? "#ffffff" : heavy ? "#59606b" : "#7d8794";
+  const dark = flashHit ? "#dddddd" : heavy ? "#3a3f48" : "#4d5560";
+  // 脚
+  ctx.fillStyle = dark;
+  ctx.fillRect(-10 * s + legA * 0.5, -20 * s, 6 * s, 20 * s);
+  ctx.fillRect(4 * s - legA * 0.5, -20 * s, 6 * s, 20 * s);
+  ctx.fillRect(-13 * s + legA * 0.5, -4 * s, 11 * s, 4 * s);
+  ctx.fillRect(2 * s - legA * 0.5, -4 * s, 11 * s, 4 * s);
+  // 胴
+  ctx.fillStyle = body;
+  ctx.beginPath(); ctx.roundRect ? ctx.roundRect(-e.w / 2, -e.h + 16 * s, e.w, 30 * s, 6 * s) : ctx.rect(-e.w / 2, -e.h + 16 * s, e.w, 30 * s); ctx.fill();
+  if (heavy) { ctx.fillStyle = dark; ctx.fillRect(-e.w / 2 - 6, -e.h + 18 * s, 8, 24 * s); ctx.fillRect(e.w / 2 - 2, -e.h + 18 * s, 8, 24 * s); }
+  // 頭
+  ctx.fillStyle = body;
+  ctx.fillRect(-10 * s, -e.h, 20 * s, 14 * s);
+  ctx.fillStyle = "#16202a"; ctx.fillRect(-7 * s + (e.dir > 0 ? 2 : -2) * s, -e.h + 4 * s, 14 * s, 5 * s);
+  ctx.fillStyle = "#ff4a3a"; ctx.fillRect((e.dir > 0 ? 2 : -6) * s, -e.h + 5 * s, 4 * s, 3 * s);
+  // 弱点（コア）
+  const pulse = 0.6 + 0.4 * Math.sin(time * 6 + e.x);
+  ctx.fillStyle = `rgba(255,${heavy ? 90 : 60},60,${pulse})`;
+  const cy = heavy ? -e.h + 38 : -e.h + 32;
+  ctx.beginPath(); ctx.arc(0, cy, heavy ? 8 : 6, 0, 7); ctx.fill();
+  ctx.strokeStyle = "rgba(255,200,200,0.8)"; ctx.lineWidth = 1.5; ctx.stroke();
+  // 腕と銃
+  ctx.fillStyle = dark;
+  ctx.fillRect(e.dir > 0 ? e.w / 2 - 4 : -e.w / 2 - 18 * s, -e.h + 26 * s, 22 * s, 5 * s);
+  // HPバー
+  if (!e.dead && e.hp < e.max) {
+    ctx.fillStyle = "rgba(0,0,0,0.5)"; ctx.fillRect(-20, -e.h - 14, 40, 5);
+    ctx.fillStyle = "#ff6a4a"; ctx.fillRect(-20, -e.h - 14, 40 * e.hp / e.max, 5);
+  }
+  // 撤退（ワープ）
+  if (e.leaving || e.warp > 0) {
+    ctx.globalAlpha = 0.5;
+    ctx.fillStyle = "#7fd4ff"; ctx.fillRect(-e.w / 2 - 4, -e.h - 40, e.w + 8, e.h + 40);
+  }
+  ctx.restore();
+}
+
+function drawScopeOverlay() {
+  const R = Math.min(W, H) * (W > H ? 0.44 : 0.46);
+  const cx = W / 2, cy = H / 2;
+  const a = aimPoint();
+  const off = { x: (a.x - cam.x) * viewZoom(), y: (a.y - cam.y) * viewZoom() };
+  // 外側を暗く
+  ctx.save();
+  ctx.fillStyle = "#000";
+  ctx.beginPath(); ctx.rect(0, 0, W, H); ctx.arc(cx, cy, R, 0, Math.PI * 2, true); ctx.fill("evenodd");
+  // 縁のかげ
+  const vg = ctx.createRadialGradient(cx, cy, R * 0.75, cx, cy, R);
+  vg.addColorStop(0, "rgba(0,0,0,0)"); vg.addColorStop(1, "rgba(0,0,0,0.75)");
+  ctx.fillStyle = vg; ctx.beginPath(); ctx.arc(cx, cy, R, 0, 7); ctx.fill();
+  // 十字線（揺れる）
+  const x = cx + off.x, y = cy + off.y;
+  ctx.strokeStyle = "rgba(10,10,10,0.9)"; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(x - R, y); ctx.lineTo(x - 10, y); ctx.moveTo(x + 10, y); ctx.lineTo(x + R, y);
+  ctx.moveTo(x, y - R); ctx.lineTo(x, y - 10); ctx.moveTo(x, y + 10); ctx.lineTo(x, y + R); ctx.stroke();
+  ctx.lineWidth = 5;
+  ctx.beginPath(); ctx.moveTo(x - R, y); ctx.lineTo(x - R * 0.55, y); ctx.moveTo(x + R * 0.55, y); ctx.lineTo(x + R, y); ctx.moveTo(x, y + R * 0.55); ctx.lineTo(x, y + R); ctx.stroke();
+  ctx.fillStyle = "rgba(10,10,10,0.9)";
+  for (let i = 1; i <= 4; i++) { for (const d of [-1, 1]) { ctx.beginPath(); ctx.arc(x + d * i * R * 0.11, y, 2.2, 0, 7); ctx.fill(); ctx.beginPath(); ctx.arc(x, y + d * i * R * 0.11, 2.2, 0, 7); ctx.fill(); } }
+  ctx.fillStyle = "#ff3030"; ctx.beginPath(); ctx.arc(x, y, 2.2, 0, 7); ctx.fill();
+  // 倍率
+  ctx.font = `800 12px ${FONT}`; ctx.fillStyle = "rgba(255,255,255,0.65)"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillText(`×${gun.zoom().toFixed(1)}`, cx, cy + R - 18);
+  ctx.font = `800 13px ${FONT}`; ctx.fillStyle = "rgba(255,255,255,0.85)";
+  ctx.fillText(reloadT > 0 ? "装填中…" : "指を離すと発射", cx, cy - R + 22);
+  // 画面外の敵の方向
+  for (const e of enemies) {
+    if (e.dead || e.gone) continue;
+    const p = toScreen(e.x, e.type === "drone" ? e.y : e.y - e.h / 2);
+    const dx = p.x - cx, dy = p.y - cy, d = Math.hypot(dx, dy);
+    if (d < R * 0.95) continue;
+    const ux = dx / d, uy = dy / d, ex = cx + ux * (R - 14), ey = cy + uy * (R - 14);
+    ctx.save(); ctx.translate(ex, ey); ctx.rotate(Math.atan2(uy, ux));
+    ctx.fillStyle = e.type === "heavy" ? "#ffb347" : "#ff5a5a";
+    ctx.beginPath(); ctx.moveTo(9, 0); ctx.lineTo(-6, -7); ctx.lineTo(-6, 7); ctx.closePath(); ctx.fill();
+    ctx.restore();
+  }
+  // 装填中
+  if (reloadT > 0 || boltT > 0) {
+    const tot = reloadT > 0 ? gun.reload() : gun.bolt(), left = reloadT > 0 ? reloadT : boltT;
+    ctx.strokeStyle = "rgba(255,255,255,0.8)"; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(cx, cy, 26, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * (1 - left / tot)); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawPlainOverlay() {
+  // スコープを覗いていないとき：敵に印をつける
+  for (const e of enemies) {
+    if (e.dead || e.gone) continue;
+    const p = toScreen(e.x, e.type === "drone" ? e.y - 22 : e.y - e.h - 18);
+    ctx.fillStyle = e.type === "heavy" ? "#ffb347" : "#ff5a5a";
+    ctx.beginPath(); ctx.moveTo(p.x, p.y + 8); ctx.lineTo(p.x - 6, p.y); ctx.lineTo(p.x + 6, p.y); ctx.closePath(); ctx.fill();
+  }
+  // 中央の照準
+  ctx.strokeStyle = "rgba(255,255,255,0.85)"; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(W / 2, H / 2, 16, 0, 7); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(W / 2 - 24, H / 2); ctx.lineTo(W / 2 - 8, H / 2); ctx.moveTo(W / 2 + 8, H / 2); ctx.lineTo(W / 2 + 24, H / 2);
+  ctx.moveTo(W / 2, H / 2 - 24); ctx.lineTo(W / 2, H / 2 - 8); ctx.moveTo(W / 2, H / 2 + 8); ctx.lineTo(W / 2, H / 2 + 24); ctx.stroke();
+  // 画面外の敵の方向
+  for (const e of enemies) {
+    if (e.dead || e.gone) continue;
+    const p = toScreen(e.x, e.type === "drone" ? e.y : e.y - e.h / 2);
+    if (p.x > 20 && p.x < W - 20 && p.y > 70 && p.y < H - 110) continue;
+    const ax = clamp(p.x, 22, W - 22), ay = clamp(p.y, 80, H - 120);
+    ctx.save(); ctx.translate(ax, ay); ctx.rotate(Math.atan2(p.y - ay || 0.0001, p.x - ax || 0.0001));
+    ctx.fillStyle = e.type === "heavy" ? "#ffb347" : "#ff5a5a";
+    ctx.beginPath(); ctx.moveTo(12, 0); ctx.lineTo(-7, -9); ctx.lineTo(-7, 9); ctx.closePath(); ctx.fill();
+    ctx.restore();
+  }
+  // 案内
+  ctx.font = `800 13px ${FONT}`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  const tip1 = "敵を長押しでスコープ → 指を離すと発射", tip2 = "ドラッグで見回す";
+  const tw = ctx.measureText(tip1).width + 28, ty = H - 150;
+  ctx.fillStyle = "rgba(10,16,22,0.7)"; ctx.beginPath(); ctx.roundRect ? ctx.roundRect(W / 2 - tw / 2, ty - 22, tw, 44, 12) : ctx.rect(W / 2 - tw / 2, ty - 22, tw, 44); ctx.fill();
+  ctx.fillStyle = "#ffffff"; ctx.fillText(tip1, W / 2, ty - 8);
+  ctx.font = `700 11px ${FONT}`; ctx.fillStyle = "rgba(255,255,255,0.7)"; ctx.fillText(tip2, W / 2, ty + 10);
+}
+
+// ---------- ループ ----------
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  update(dt);
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  if (!city) city = buildCity(1077, false);
+  drawWorld();
+  if (mode === "play") {
+    if (zoomNow > 1.15) drawScopeOverlay(); else drawPlainOverlay();
+    if (flash > 0) { ctx.fillStyle = `rgba(255,240,200,${flash * 3})`; ctx.fillRect(0, 0, W, H); }
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
