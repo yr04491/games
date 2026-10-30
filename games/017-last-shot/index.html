@@ -19,7 +19,7 @@
 "use strict";
 // ============================================================
 //  ラストシュート — 試合の決定的な場面だけを、スワイプのシュートで決める
-//  ・ボールから上へスワイプ：長さで強さと高さ、向きでねらい、弧を描くとカーブ
+//  ・ボールからゴールへ線を引く：指を離した場所へボールが飛ぶ。線をふくらませるとカーブ
 //  ・場面はフリーキック・PK・1対1。1試合のチャンスのうち、目標の本数を決めれば勝ち
 //  ・全5試合を勝ち抜けば優勝。キーパーは試合ごとに強くなる
 //  ・画像ファイルなし：すべてコードで描画（疑似3D）
@@ -240,22 +240,48 @@ function setupChance(ev, idle) {
 }
 
 // ---------- シュート ----------
-//  n：0〜1（高さ。長いスワイプほど高く）、pw：0〜1（強さ。素早くはじくほど強く）
-//  aim：ねらいの角度（ラジアン、右が＋）、curve：-0.5〜0.5（右にふくらむと＋）
-function shoot(n, aim, curve, pw) {
+//  指を離した場所（ゴールの面の上の点 tx, ty）にボールが届くように蹴る。強さの考え方はない
+//  curve：-0.5〜0.5（線が右にふくらむと＋。最初は右へふくらみ、終点にもどる）
+function launch(b, c, tx, ty, curve, vh) {
+  const D = Math.max(6, Math.hypot(tx - c.start.x, 0 - c.start.z));
+  const theta = curve * 0.62;
+  let yaw = Math.atan2(tx - c.start.x, 0 - c.start.z);
+  const T = D / vh;
+  let vy = (ty - BALL_R + 0.5 * GRAV * T * T) / T;
+  const set = () => {
+    b.x = c.start.x; b.y = BALL_R; b.z = c.start.z;
+    b.vx = Math.sin(yaw + theta) * vh; b.vz = Math.cos(yaw + theta) * vh; b.vy = vy;
+    b.a = 2 * vh * vh * theta / D;
+  };
+  // 空気の抵抗やカーブのずれを、試し打ちで3回直す
+  for (let i = 0; i < 3; i++) {
+    set();
+    const p = predict(b, 0);
+    yaw += (tx - p.x) / D;
+    vy += (ty - p.y) / Math.max(0.3, p.t);
+  }
+  set();
+}
+// 壁に当たるか（ボールの通り道を先に計算）
+function hitsWall(b, c) {
+  const p = { x: b.x, y: b.y, z: b.z, vx: b.vx, vy: b.vy, vz: b.vz, a: b.a };
+  for (let t = 0; t < 3 && p.z < 0; t += 1 / 120) {
+    stepBall(p, 1 / 120);
+    for (const w of c.wall) if (Math.hypot(p.x - w.x, p.z - w.z) < 0.3 + BALL_R && p.y < 1.85 + 0.42 + BALL_R + 0.1) return true;
+  }
+  return false;
+}
+function shootAt(tx, ty, curve) {
   const c = C, b = c.ball;
   if (c.state !== "aim" || M.phase !== "aim") return;
-  pw = pw || 0;
-  const speed = 17 + 5 * n + 9 * pw;
-  const elev = (3 + 26 * n - 6 * pw * n) * Math.PI / 180;
-  const theta = curve * 0.62;                  // 最初はふくらむ方へ
-  const yaw0 = c.camYaw + aim + theta;
-  const vh = speed * Math.cos(elev);
-  b.vx = Math.sin(yaw0) * vh; b.vz = Math.cos(yaw0) * vh; b.vy = speed * Math.sin(elev);
-  // ゴールの手前で、ねらいの線にもどる曲がり方
-  const D = Math.max(6, c.dist);
-  b.a = 2 * vh * vh * theta / D;
+  // 速く低い軌道から試し、壁を越えられる中でいちばん速い軌道を選ぶ（越えられなければ速い軌道のまま）
+  let vh = 26;
+  if (c.wall.length) {
+    for (let v = 26; v >= 19; v -= 1) { launch(b, c, tx, ty, curve, v); if (!hitsWall(b, c)) { vh = v; break; } }
+  }
+  launch(b, c, tx, ty, curve, vh);
   b.spin = curve;
+  c.target = { x: tx, y: ty };
   c.state = "flight"; c.t = 0; c.kickT = 0; c.trail = [];
   M.phase = "flight"; M.shots++;
   SFX.kick();
@@ -392,30 +418,35 @@ cv.addEventListener("pointerup", e => {
   if (d.tapOnly) { tap(e.clientX, e.clientY); return; }
   d.pts.push({ x: e.clientX, y: e.clientY, t: performance.now() });
   const r = swipeToShot(d.pts);
-  if (r) shoot(r.n, r.aim, r.curve, r.pw);
+  if (r) shootAt(r.x, r.y, r.curve);
   else tap(e.clientX, e.clientY);
 });
 cv.addEventListener("pointercancel", () => { drag = null; });
 
-// スワイプをシュートの値に変える
+// 画面の点 → ゴールの面（z=0）の上の点
+function screenToGoal(sx, sy) {
+  const xr = (sx - cam.cx) / cam.f, y2 = (cam.cy - sy) / cam.f, z2 = 1;
+  const dy = y2 * cam.cp - z2 * cam.sp, zr = y2 * cam.sp + z2 * cam.cp;
+  const dx = xr * cam.cyaw + zr * cam.syaw, dz = -xr * cam.syaw + zr * cam.cyaw;
+  if (dz <= 0.01) return null;
+  const t = (0 - cam.z) / dz;
+  return { x: clamp(cam.x + dx * t, -14, 14), y: clamp(cam.y + dy * t, BALL_R, 7) };
+}
+// スワイプ → 指を離した点（ねらう場所）と、線のふくらみ（カーブ）
 function swipeToShot(pts) {
   const s = pts[0], e = pts[pts.length - 1];
   const dx = e.x - s.x, dy = e.y - s.y, L = Math.hypot(dx, dy);
   if (-dy < 30 || L < 40) return null;
-  const unit = Math.min(H, 900);
-  const n = clamp((L - 40) / (unit * 0.42), 0, 1);
-  const aim = clamp(Math.atan2(dx, -dy) * 0.42, -0.45, 0.45);
+  const tgt = screenToGoal(e.x, e.y);
+  if (!tgt) return null;
   // 弦からいちばん離れた点で、ふくらみを測る（右がプラス）
   let dev = 0;
   for (const p of pts) {
-    const d = ((p.x - s.x) * -dy - (p.y - s.y) * -dx) / L; // 弦の右側がプラス
+    const d = ((p.x - s.x) * -dy - (p.y - s.y) * -dx) / L;
     if (Math.abs(d) > Math.abs(dev)) dev = d;
   }
   const curve = clamp(dev / L * 1.6, -0.5, 0.5);
-  // 指の速さ（px/ミリ秒）。最後の部分の速さで強さを決める
-  const dur = Math.max(30, e.t - s.t), vel = L / dur;
-  const pw = clamp((vel - 0.7) / 1.8, 0, 1);
-  return { n, aim, pw, curve: Math.abs(curve) < 0.04 ? 0 : curve };
+  return { x: tgt.x, y: tgt.y, curve: Math.abs(curve) < 0.04 ? 0 : curve };
 }
 
 function tap(x, y) {
@@ -671,7 +702,7 @@ function drawTitle() {
   const a = 0.55 + 0.45 * Math.sin(time * 4);
   ctx.globalAlpha = a; neon("タップでスタート", W / 2, H * 0.72, Math.min(W * 0.055, 21), "#ffffff", "rgba(0,0,0,.8)", 800); ctx.globalAlpha = 1;
   ctx.fillStyle = "rgba(255,255,255,.85)"; ctx.font = `700 13px ${FONT}`; ctx.textAlign = "center";
-  ctx.fillText("ボールから上へスワイプ。弧を描くとカーブ", W / 2, H * 0.79);
+  ctx.fillText("ゴールへ線を引く。指を離した所へシュート", W / 2, H * 0.79);
   button(12, 12, 92, 36, "← 一覧", () => { location.href = "../../"; }, { size: 14, fill: "rgba(255,255,255,.9)" });
 }
 
@@ -751,8 +782,8 @@ function drawMatch() {
       ctx.globalAlpha = a; ctx.fillStyle = "rgba(0,0,0,.55)"; const tw = Math.min(W - 40, 340);
       roundRect((W - tw) / 2, H - 120, tw, 64, 14); ctx.fill(); ctx.globalAlpha = 1;
       ctx.fillStyle = "#fff"; ctx.font = `800 15px ${FONT}`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
-      ctx.fillText("上へスワイプでシュート", W / 2, H - 100);
-      ctx.font = `700 12px ${FONT}`; ctx.fillStyle = "#ffe08a"; ctx.fillText("長いほど強く高く／弧を描くとカーブ", W / 2, H - 77);
+      ctx.fillText("ボールからゴールへ線を引く", W / 2, H - 100);
+      ctx.font = `700 12px ${FONT}`; ctx.fillStyle = "#ffe08a"; ctx.fillText("指を離した所へ飛ぶ／線をふくらませるとカーブ", W / 2, H - 77);
     }
     // 場面の名前
     ctx.fillStyle = "rgba(0,0,0,.5)"; roundRect(12, 76, 104, 26, 8); ctx.fill();
