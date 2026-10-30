@@ -20,7 +20,7 @@
 // ============================================================
 //  ラストシュート — 試合の決定的な場面だけを、スワイプのシュートで決める
 //  ・ボールから上へスワイプ：長さで強さと高さ、向きでねらい、弧を描くとカーブ
-//  ・場面はフリーキック・PK・1対1。試合の時間が進み、相手の得点も入る
+//  ・場面はフリーキック・PK・1対1。1試合のチャンスのうち、目標の本数を決めれば勝ち
 //  ・全5試合を勝ち抜けば優勝。キーパーは試合ごとに強くなる
 //  ・画像ファイルなし：すべてコードで描画（疑似3D）
 // ============================================================
@@ -61,13 +61,13 @@ const KEEPERS = [
   { react: 0.34, speed: 2.75, err: 1.26 },
   { react: 0.32, speed: 2.9, err: 1.18 },
 ];
-// 試合の流れ：c=こちらのチャンス、opp=相手の得点
+// 試合ごとのチャンスと、勝つのに必要なゴール数
 const MATCHES = [
-  [{ m: 14, c: { t: "PK" } }, { m: 33, opp: 1 }, { m: 51, c: { t: "FK", x: -2, z: -22 } }, { m: 70, c: { t: "1v1", x: 3 } }, { m: 86, c: { t: "FK", x: 9, z: -23 } }],
-  [{ m: 9, opp: 1 }, { m: 27, c: { t: "FK", x: 0, z: -25 } }, { m: 48, c: { t: "1v1", x: -4 } }, { m: 66, c: { t: "FK", x: -11, z: -21 } }, { m: 84, c: { t: "PK" } }],
-  [{ m: 11, c: { t: "1v1", x: 1 } }, { m: 24, opp: 1 }, { m: 39, c: { t: "FK", x: 6, z: -26 } }, { m: 57, c: { t: "PK" } }, { m: 63, opp: 1 }, { m: 78, c: { t: "FK", x: -7, z: -24 } }, { m: 89, c: { t: "1v1", x: -2 } }],
-  [{ m: 16, opp: 1 }, { m: 29, c: { t: "FK", x: 12, z: -20 } }, { m: 45, c: { t: "1v1", x: 4 } }, { m: 58, opp: 1 }, { m: 67, c: { t: "FK", x: 0, z: -28 } }, { m: 81, c: { t: "PK" } }, { m: 90, c: { t: "FK", x: -10, z: -24 } }],
-  [{ m: 7, opp: 1 }, { m: 21, c: { t: "FK", x: -5, z: -27 } }, { m: 38, c: { t: "1v1", x: -3 } }, { m: 52, opp: 1 }, { m: 64, c: { t: "PK" } }, { m: 77, opp: 1 }, { m: 88, c: { t: "FK", x: 4, z: -24 } }, { m: 93, c: { t: "FK", x: -9, z: -22 } }],
+  { need: 2, chances: [{ t: "PK" }, { t: "FK", x: -2, z: -22 }, { t: "1v1", x: 3 }, { t: "FK", x: 9, z: -23 }] },
+  { need: 2, chances: [{ t: "FK", x: 0, z: -25 }, { t: "1v1", x: -4 }, { t: "FK", x: -11, z: -21 }, { t: "PK" }] },
+  { need: 3, chances: [{ t: "1v1", x: 1 }, { t: "FK", x: 6, z: -26 }, { t: "PK" }, { t: "FK", x: -7, z: -24 }, { t: "1v1", x: -2 }] },
+  { need: 3, chances: [{ t: "FK", x: 12, z: -20 }, { t: "1v1", x: 4 }, { t: "FK", x: 0, z: -28 }, { t: "PK" }, { t: "FK", x: -10, z: -24 }] },
+  { need: 4, chances: [{ t: "FK", x: -5, z: -27 }, { t: "1v1", x: -3 }, { t: "PK" }, { t: "FK", x: 4, z: -24 }, { t: "FK", x: -9, z: -22 }] },
 ];
 const TYPE_NAME = { FK: "フリーキック", PK: "PK", "1v1": "1対1" };
 
@@ -107,7 +107,6 @@ const SFX = {
   post() { tone(1250, 0.5, "triangle", 0.1); tone(1880, 0.35, "sine", 0.05); noise(1, 0.1, 700, 0.7, 0.05); },
   block() { tone(110, 0.12, "sine", 0.3, 60); noise(0.6, 0.08, 600, 0.7); },
   miss() { noise(0.9, 0.1, 500, 0.7); },
-  opp() { noise(1.0, 0.06, 1200, 0.6); tone(330, 0.3, "sine", 0.06, 220); },
 };
 
 // ---------- カメラ（疑似3D） ----------
@@ -174,8 +173,8 @@ let M = null;          // 試合
 let C = null;          // いまのチャンス（ボール・壁・キーパー）
 
 function startMatch(i) {
-  M = { idx: i, team: TEAMS[i], kp: KEEPERS[i], events: MATCHES[i], ei: -1, our: 0, opp: 0, minute: 0,
-    phase: "kickoff", t: 0, banner: null, goalsThisMatch: 0, shots: 0 };
+  M = { idx: i, team: TEAMS[i], kp: KEEPERS[i], events: MATCHES[i].chances, need: MATCHES[i].need, ei: -1, our: 0,
+    phase: "kickoff", t: 0, goalsThisMatch: 0, shots: 0 };
   scene = "match";
   SFX.whistle();
   C = null;
@@ -183,16 +182,14 @@ function startMatch(i) {
 }
 function nextEvent() {
   M.ei++;
-  if (M.ei >= M.events.length) { endMatch(); return; }
-  const ev = M.events[M.ei];
-  M.minute = ev.m;
-  if (ev.opp) { M.opp += ev.opp; M.phase = "opp"; M.t = 0; SFX.opp(); return; }
-  setupChance(ev.c);
+  // 目標に届いた、または残りのチャンスでは届かなくなったら試合終了
+  const left = M.events.length - M.ei;
+  if (M.our >= M.need || M.our + left < M.need || M.ei >= M.events.length) { endMatch(); return; }
+  setupChance(M.events[M.ei]);
   M.phase = "intro"; M.t = 0;
 }
 function endMatch() {
-  const win = M.our > M.opp;
-  M.minute = Math.max(90, M.minute);
+  const win = M.our >= M.need;
   M.phase = "end"; M.t = 0; M.win = win;
   SFX.whistle();
   if (win) {
@@ -286,6 +283,7 @@ function predict(b, kz) {
 function finish(res) {
   const c = C; if (c.result) return;
   c.result = res; c.state = "result"; c.t = 0; M.phase = "result"; M.t = 0;
+  M.marks = M.marks || []; M.marks[M.ei] = res === "goal";
   if (res === "goal") { M.our++; M.goalsThisMatch++; save.goals++; writeSave(); SFX.goal(); medal(2); } // 共通メダル：ゴールで2枚
   else if (res === "save") SFX.save();
   else if (res === "post") SFX.post();
@@ -428,7 +426,7 @@ function tap(x, y) {
   if (scene === "title") scene = "season";
   else if (scene === "match" && (M.phase === "result" && M.t > 0.8)) advance();
 }
-function advance() { if (M.phase === "result" || M.phase === "opp" || M.phase === "kickoff") nextEvent(); }
+function advance() { if (M.phase === "result" || M.phase === "kickoff") nextEvent(); }
 
 // ---------- 更新 ----------
 function update(dt) {
@@ -438,7 +436,6 @@ function update(dt) {
   if (C) updateChance(dt);
   if (M.phase === "kickoff" && M.t > 1.6) nextEvent();
   else if (M.phase === "intro" && M.t > 1.5) { M.phase = "aim"; M.t = 0; }
-  else if (M.phase === "opp" && M.t > 2.0) nextEvent();
   else if (M.phase === "result" && M.t > 2.3) nextEvent();
   // カメラはボールのうしろ。飛んでいる間は少しだけボールを追う
   if (C) {
@@ -663,7 +660,7 @@ function button(x, y, w, h, label, fn, opt) {
 
 function drawTitle() {
   // 背景：PKの場面
-  if (!M) { M = { idx: 0, team: TEAMS[0], kp: KEEPERS[0], events: [], ei: 0, phase: "title", t: 0 }; setupChance({ t: "FK", x: 3, z: -22 }, true); }
+  if (!M) { M = { idx: 0, team: TEAMS[0], kp: KEEPERS[0], events: [], need: 0, ei: 0, our: 0, phase: "title", t: 0 }; setupChance({ t: "FK", x: 3, z: -22 }, true); }
   setCam(...C.cam, C.camYaw, 0.07);
   drawScene();
   ctx.fillStyle = "rgba(5,10,25,.45)"; ctx.fillRect(0, 0, W, H);
@@ -712,22 +709,27 @@ function drawSeason() {
   });
 }
 
+// 左上：決めたゴール／目標、その下にチャンスの残り（ボールの印）
 function drawScoreboard() {
   const x = 12, y = 12, h = 38;
   ctx.save(); ctx.shadowColor = "rgba(0,0,0,.4)"; ctx.shadowBlur = 8;
-  ctx.fillStyle = "#0b0b0b"; ctx.fillRect(x, y, 58, h);
+  ctx.fillStyle = "#0b0b0b"; ctx.fillRect(x, y, 68, h);
   ctx.restore();
-  ctx.fillStyle = "#ffffff"; ctx.font = `900 italic 20px ${FONT}`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
-  ctx.fillText(`${M.minute}'`, x + 29, y + h / 2 + 1);
-  const box = (bx, col, col2, n) => {
-    ctx.fillStyle = col; ctx.fillRect(bx, y, 44, h); ctx.fillStyle = col2; ctx.fillRect(bx, y + h * 0.62, 44, h * 0.38);
-    ctx.strokeStyle = "#fff"; ctx.lineWidth = 2; ctx.strokeRect(bx, y, 44, h);
-    ctx.fillStyle = "#fff"; ctx.font = `900 italic 22px ${FONT}`; ctx.lineWidth = 3; ctx.strokeStyle = "rgba(0,0,0,.55)";
-    ctx.strokeText(String(n), bx + 22, y + h / 2 + 1); ctx.fillText(String(n), bx + 22, y + h / 2 + 1);
-  };
-  box(x + 62, HOME.shirt, HOME.shorts, M.our);
-  ctx.fillStyle = "#fff"; ctx.font = `900 18px ${FONT}`; ctx.fillText("-", x + 118, y + h / 2);
-  box(x + 128, M.team.shirt, M.team.shorts, M.opp);
+  ctx.fillStyle = "#ffcf33"; ctx.font = `900 12px ${FONT}`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillText("ゴール", x + 34, y + h / 2 + 1);
+  ctx.fillStyle = HOME.shirt; ctx.fillRect(x + 72, y, 76, h); ctx.fillStyle = HOME.shorts; ctx.fillRect(x + 72, y + h * 0.62, 76, h * 0.38);
+  ctx.strokeStyle = "#fff"; ctx.lineWidth = 2; ctx.strokeRect(x + 72, y, 76, h);
+  ctx.fillStyle = "#fff"; ctx.font = `900 italic 22px ${FONT}`; ctx.lineWidth = 3; ctx.strokeStyle = "rgba(0,0,0,.55)";
+  const t = `${M.our} / ${M.need}`;
+  ctx.strokeText(t, x + 110, y + h / 2 + 1); ctx.fillText(t, x + 110, y + h / 2 + 1);
+  // チャンスの印：決めた＝黄、外した＝灰、これから＝白わく
+  for (let i = 0; i < M.events.length; i++) {
+    const cx = x + 8 + i * 18, cy = y + h + 14, r = 6;
+    const done = i < M.ei || (i === M.ei && (M.phase === "result" || M.phase === "end"));
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    if (done) { ctx.fillStyle = M.marks && M.marks[i] ? "#ffcf33" : "rgba(255,255,255,.35)"; ctx.fill(); }
+    else { ctx.strokeStyle = "rgba(255,255,255,.85)"; ctx.lineWidth = 1.5; ctx.stroke(); }
+  }
 }
 
 function drawMatch() {
@@ -740,8 +742,8 @@ function drawMatch() {
     ctx.beginPath(); drag.pts.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)); ctx.stroke(); ctx.restore();
   }
   const ph = M.phase, t = M.t;
-  if (ph === "kickoff") banner(`vs ${M.team.name}`, ["1回戦", "2回戦", "準々決勝", "準決勝", "決勝"][M.idx] + "　キックオフ", "#ffffff", t);
-  if (ph === "intro") banner(`${M.minute}'  チャンス！`, TYPE_NAME[C.type], "#ffcf33", t);
+  if (ph === "kickoff") banner(`vs ${M.team.name}`, `${M.events.length}回のチャンスで${M.need}点決めれば勝ち`, "#ffffff", t);
+  if (ph === "intro") banner(`チャンス ${M.ei + 1} / ${M.events.length}`, TYPE_NAME[C.type], "#ffcf33", t);
   if (ph === "aim") {
     // ヒント（最初の数本）
     if (M.shots < 2 && M.idx === 0) {
@@ -753,8 +755,8 @@ function drawMatch() {
       ctx.font = `700 12px ${FONT}`; ctx.fillStyle = "#ffe08a"; ctx.fillText("長いほど強く高く／弧を描くとカーブ", W / 2, H - 77);
     }
     // 場面の名前
-    ctx.fillStyle = "rgba(0,0,0,.5)"; roundRect(12, 58, 104, 26, 8); ctx.fill();
-    ctx.fillStyle = "#ffcf33"; ctx.font = `900 13px ${FONT}`; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(TYPE_NAME[C.type], 64, 71);
+    ctx.fillStyle = "rgba(0,0,0,.5)"; roundRect(12, 76, 104, 26, 8); ctx.fill();
+    ctx.fillStyle = "#ffcf33"; ctx.font = `900 13px ${FONT}`; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(TYPE_NAME[C.type], 64, 89);
   }
   if (ph === "result") {
     const r = C.result;
@@ -765,10 +767,6 @@ function drawMatch() {
     neon(txt, 0, 0, r === "goal" ? Math.min(W * 0.16, 72) : Math.min(W * 0.085, 36), col, "rgba(0,0,0,.8)");
     ctx.restore();
     if (t > 0.8) { ctx.globalAlpha = 0.7; ctx.fillStyle = "#fff"; ctx.font = `700 12px ${FONT}`; ctx.textAlign = "center"; ctx.fillText("タップで次へ", W / 2, H - 40); ctx.globalAlpha = 1; }
-  }
-  if (ph === "opp") {
-    ctx.fillStyle = `rgba(0,0,0,${0.5 * clamp(t / 0.3, 0, 1)})`; ctx.fillRect(0, 0, W, H);
-    banner(`${M.minute}'  失点…`, `${M.team.name}にゴールを決められた　${M.our} - ${M.opp}`, "#ff6b6b", t, true);
   }
   if (ph === "end") drawEnd();
 }
@@ -787,13 +785,13 @@ function drawEnd() {
   ctx.fillStyle = `rgba(4,10,20,${0.78 * k})`; ctx.fillRect(0, 0, W, H);
   ctx.globalAlpha = k;
   const last = M.idx === MATCHES.length - 1;
-  const title = M.win ? (last ? "優勝！" : "勝利！") : (M.our === M.opp ? "引き分け…" : "敗戦…");
+  const title = M.win ? (last ? "優勝！" : "勝利！") : "敗戦…";
   neon("試合終了", W / 2, H * 0.24, 18, "#ffffff", "rgba(0,0,0,.8)", 800);
   neon(title, W / 2, H * 0.31, Math.min(W * 0.13, 56), M.win ? "#ffcf33" : "#ffffff", "rgba(0,0,0,.8)");
-  neon(`${M.our} - ${M.opp}`, W / 2, H * 0.41, 40, "#ffffff", "rgba(0,0,0,.8)");
+  neon(`ゴール ${M.our} / ${M.need}`, W / 2, H * 0.41, 34, "#ffffff", "rgba(0,0,0,.8)");
   ctx.fillStyle = "rgba(255,255,255,.75)"; ctx.font = `700 14px ${FONT}`; ctx.textAlign = "center";
   ctx.fillText(`vs ${M.team.name}`, W / 2, H * 0.47);
-  if (!M.win) ctx.fillText("勝つと次の試合に進めます", W / 2, H * 0.51);
+  if (!M.win) ctx.fillText(`${M.need}点決めると次の試合に進めます`, W / 2, H * 0.51);
   ctx.globalAlpha = 1;
   if (t > 0.6) {
     const bw = Math.min(W - 48, 300), bx = (W - bw) / 2, by = H * 0.57;
