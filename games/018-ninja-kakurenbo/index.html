@@ -1,0 +1,773 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>忍者かくれんぼ</title>
+<style>
+  html,body{margin:0;height:100%;background:#2a1e14;overflow:hidden;touch-action:none;overscroll-behavior:none;
+    font-family:system-ui,-apple-system,"Hiragino Sans","Noto Sans CJK JP","Noto Sans JP",sans-serif;
+    -webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
+  canvas{display:block;width:100vw;height:100vh;height:100dvh}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script src="../../shared/medal.js"></script>
+<script>Medal.requireUnlock("018");</script>
+<script>
+"use strict";
+// ============================================================
+//  忍者かくれんぼ — 屋敷のあちこちに隠れた忍者を見つける
+//  ・画面より広い舞台を、指で左右にスライドして探す（下の地図をタップしても移動）
+//  ・怪しい物をタップ：忍者がいれば「ドロン」と飛び出す。外れは残り時間 -3秒
+//  ・手がかり：ふすまの下のつま先、屏風からはみ出たマフラー、壺のふちの頭巾、茂みの目…
+//  ・制限時間内に全員見つければクリア。ヒントは -10秒
+//  ・全5面（和室・台所・庭・竹林・天守）。忍者の隠れ場所は毎回変わる
+//  ・画像ファイルなし：すべてコードで描画
+// ============================================================
+const cv = document.getElementById("c");
+const ctx = cv.getContext("2d");
+const FONT = 'system-ui,-apple-system,"Hiragino Sans","Noto Sans CJK JP","Noto Sans JP",sans-serif';
+const SERIF = '"Hiragino Mincho ProN","Yu Mincho","Noto Serif JP","Noto Serif CJK JP",serif';
+let W = 0, H = 0, DPR = 1;
+const HUD_T = 64, HUD_B = 54;
+let u = 6, SH = 0;   // u：舞台の1単位（舞台の高さ＝100単位）
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = innerWidth; H = innerHeight;
+  cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
+  SH = H - HUD_T - HUD_B; u = SH / 100;
+  if (G) G.camX = clamp(G.camX, 0, maxCam());
+}
+addEventListener("resize", resize);
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+const lerp = (a, b, t) => a + (b - a) * t;
+const ease = t => 1 - Math.pow(1 - t, 3);
+const FLOOR = 80; // 床の高さ（上から80単位）
+
+// ---------- 保存 ----------
+const SAVE_KEY = "ninja-kakurenbo-v1";
+let save = { best: [0, 0, 0, 0, 0], cleared: 0, sound: true };
+try { const s = JSON.parse(localStorage.getItem(SAVE_KEY)); if (s) save = Object.assign(save, s); } catch (e) {}
+function writeSave() { try { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch (e) {} }
+function medal(n) { if (n > 0 && window.Medal) Medal.add(n); }
+
+// ---------- 音 ----------
+let ac = null, nb = null;
+function audio() {
+  if (!save.sound) return null;
+  if (!ac) { try { ac = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { return null; }
+    nb = ac.createBuffer(1, ac.sampleRate, ac.sampleRate); const d = nb.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1; }
+  if (ac.state === "suspended") ac.resume();
+  return ac;
+}
+function tone(f, dur, type, vol, f2, delay) {
+  const a = audio(); if (!a) return; const t = a.currentTime + (delay || 0);
+  const o = a.createOscillator(), g = a.createGain(); o.type = type; o.frequency.setValueAtTime(f, t);
+  if (f2) o.frequency.exponentialRampToValueAtTime(f2, t + dur);
+  g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur); o.connect(g); g.connect(a.destination); o.start(t); o.stop(t + dur + 0.05);
+}
+function puff(dur, vol, freq, delay) {
+  const a = audio(); if (!a) return; const t = a.currentTime + (delay || 0);
+  const s = a.createBufferSource(); s.buffer = nb; const f = a.createBiquadFilter(); f.type = "lowpass"; f.frequency.setValueAtTime(freq, t); f.frequency.exponentialRampToValueAtTime(200, t + dur);
+  const g = a.createGain(); g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  s.connect(f); f.connect(g); g.connect(a.destination); s.start(t); s.stop(t + dur + 0.05);
+}
+const SFX = {
+  found() { puff(0.5, 0.35, 2500); tone(880, 0.1, "square", 0.05, null, 0.05); tone(1320, 0.18, "square", 0.05, null, 0.13); },
+  miss() { tone(180, 0.22, "sawtooth", 0.08, 110); },
+  clear() { [523, 659, 784, 1047].forEach((f, i) => tone(f, 0.2, "triangle", 0.07, null, i * 0.11)); },
+  fail() { tone(392, 0.25, "triangle", 0.07, null, 0); tone(330, 0.25, "triangle", 0.07, null, 0.22); tone(262, 0.5, "triangle", 0.07, null, 0.44); },
+  tick() { tone(1500, 0.04, "square", 0.03); },
+  hint() { tone(1046, 0.12, "sine", 0.06); tone(1568, 0.2, "sine", 0.06, null, 0.1); },
+};
+
+// ---------- 舞台 ----------
+//  物：[種類, x（中心・単位）]。忍者は「隠れられる物」から毎回ランダムに選ぶ
+const STAGES = [
+  { name: "和室", theme: "washitsu", W: 212, ninjas: 3, time: 60, tell: 1.0,
+    objs: [["fusuma", 16], ["kakejiku", 42], ["tsubo", 60], ["byobu", 84], ["andon", 104], ["tansu", 124], ["shoji", 150], ["tsubo", 172], ["byobu", 194]] },
+  { name: "台所", theme: "daidokoro", W: 234, ninjas: 4, time: 65, tell: 0.92,
+    objs: [["noren", 16], ["kamado", 42], ["taru", 64], ["tawara", 88], ["tsubo", 110], ["taru", 130], ["tansu", 152], ["noren", 178], ["tawara", 202], ["taru", 222]] },
+  { name: "庭", theme: "niwa", W: 252, ninjas: 5, time: 70, tell: 0.85,
+    objs: [["matsu", 18], ["toro", 42], ["bush", 60], ["rock", 80], ["ido", 102], ["bush", 124], ["matsu", 148], ["toro", 170], ["rock", 190], ["bush", 210], ["matsu", 234]] },
+  { name: "竹林", theme: "chikurin", W: 262, ninjas: 6, time: 75, tell: 0.78,
+    objs: [["mino", 14], ["bush", 32], ["rock", 52], ["mino", 72], ["bush", 92], ["rock", 112], ["mino", 132], ["bush", 152], ["toro", 172], ["mino", 192], ["rock", 212], ["bush", 230], ["mino", 248]] },
+  { name: "天守", theme: "tenshu", W: 284, ninjas: 7, time: 80, tell: 0.7,
+    objs: [["yoroi", 14], ["byobu", 38], ["taru", 62], ["hako", 82], ["yoroi", 102], ["tsubo", 122], ["tansu", 142], ["byobu", 166], ["hako", 188], ["yoroi", 208], ["taru", 228], ["shoji", 250], ["tsubo", 272]] },
+];
+
+// ---------- 描画の道具（単位座標：物の足もとの中心が原点、上がマイナス） ----------
+function rr(x, y, w, h, r) { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); }
+function fillRR(x, y, w, h, r, col) { ctx.fillStyle = col; rr(x, y, w, h, r); ctx.fill(); }
+function line(x1, y1, x2, y2, col, lw) { ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); }
+function ell(x, y, rx, ry, col) { ctx.fillStyle = col; ctx.beginPath(); ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2); ctx.fill(); }
+const NAVY = "#23263b", NAVY2 = "#33384f";
+
+// 物の種類：w/h（単位）、隠れられるか、手がかりの候補
+const TYPES = {
+  fusuma: { w: 22, h: 46, hide: true, tells: ["toes", "seam"], draw() {
+    fillRR(-11, -46, 22, 46, 0.4, "#5a3b22");
+    fillRR(-10.2, -45.2, 9.9, 44.6, 0.2, "#f1e7cf"); fillRR(0.3, -45.2, 9.9, 44.6, 0.2, "#efe3c8");
+    // 波の模様
+    ctx.strokeStyle = "rgba(70,110,140,.55)"; ctx.lineWidth = 0.45;
+    for (let k = 0; k < 3; k++) { ctx.beginPath(); for (let x = -9.5; x <= 9.5; x += 0.5) ctx.lineTo(x, -14 - k * 2.2 + Math.sin(x * 0.7 + k) * 0.8); ctx.stroke(); }
+    ell(-1.8, -24, 0.6, 1.4, "#3a2716"); ell(1.8, -24, 0.6, 1.4, "#3a2716");
+  } },
+  shoji: { w: 22, h: 46, hide: true, tells: ["shadow", "toes"], draw(o) {
+    fillRR(-11, -46, 22, 46, 0.3, "#6e4a2a");
+    ctx.fillStyle = "#fbf6ea"; ctx.fillRect(-10, -45, 20, 44);
+    if (o.tellDraw && o.tell === "shadow") o.tellDraw();
+    ctx.strokeStyle = "#7a5432"; ctx.lineWidth = 0.6;
+    for (let x = -10; x <= 10.01; x += 5) line(x, -45, x, -1, "#7a5432", 0.6);
+    for (let y = -45; y <= -1; y += 6.3) line(-10, y, 10, y, "#7a5432", 0.6);
+    ctx.fillStyle = "#6e4a2a"; ctx.fillRect(-11, -9, 22, 8);
+  } },
+  kakejiku: { w: 12, h: 48, hide: true, tells: ["feet"], draw() {
+    // 床の間の壁に掛かった掛け軸
+    line(0, -50, 0, -46.5, "#3a2a1a", 0.3); line(-3, -46.5, 3, -46.5, "#3a2a1a", 0.3);
+    fillRR(-5.5, -46, 11, 30, 0.3, "#3c5f4c"); fillRR(-4.6, -43.5, 9.2, 24, 0.2, "#efe6cf");
+    ctx.fillStyle = "#2a2a2a"; ctx.font = `700 3.6px ${SERIF}`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText("忍", 0, -36); ctx.fillText("耐", 0, -31);
+    ctx.fillStyle = "#b03a2e"; ctx.fillRect(1.6, -24.5, 1.4, 1.4);
+    fillRR(-6.2, -16.5, 12.4, 1.6, 0.6, "#4a3220");
+  } },
+  byobu: { w: 32, h: 28, hide: true, tells: ["scarf", "knot"], draw() {
+    const pan = [-16, -8, 0, 8];
+    pan.forEach((x, i) => {
+      fillRR(x, -28 + (i % 2) * 0.6, 8, 28 - (i % 2) * 0.6, 0.2, "#1d140c");
+      ctx.fillStyle = i % 2 ? "#d7b04a" : "#e2bd56"; ctx.fillRect(x + 0.7, -27.2 + (i % 2) * 0.6, 6.6, 26.4 - (i % 2) * 0.6);
+    });
+    // 雲と松の絵
+    ctx.fillStyle = "rgba(255,248,220,.75)"; ctx.beginPath(); ctx.ellipse(-6, -20, 7, 1.6, 0, 0, 7); ctx.fill(); ctx.beginPath(); ctx.ellipse(8, -9, 6, 1.4, 0, 0, 7); ctx.fill();
+    ctx.strokeStyle = "#5a3a1c"; ctx.lineWidth = 0.8; ctx.beginPath(); ctx.moveTo(-12, -2); ctx.quadraticCurveTo(-8, -10, 2, -13); ctx.stroke();
+    ell(2, -14, 4, 1.5, "#2f6a3e"); ell(-4, -11, 3, 1.2, "#2f6a3e");
+  } },
+  tsubo: { w: 14, h: 17, hide: true, tells: ["knot", "eyes"], draw() {
+    ctx.fillStyle = "#3d5a78"; ctx.beginPath(); ctx.moveTo(-3.5, -17); ctx.lineTo(3.5, -17); ctx.quadraticCurveTo(8.5, -12, 6.5, -3); ctx.quadraticCurveTo(5, 0, 0, 0); ctx.quadraticCurveTo(-5, 0, -6.5, -3); ctx.quadraticCurveTo(-8.5, -12, -3.5, -17); ctx.fill();
+    ell(0, -17, 3.6, 0.9, "#2a3e54"); ell(0, -17, 2.6, 0.55, "#141c26");
+    ctx.strokeStyle = "rgba(255,255,255,.35)"; ctx.lineWidth = 0.5; ctx.beginPath(); ctx.arc(-1, -8, 4, 3.6, 4.6); ctx.stroke();
+    ctx.strokeStyle = "#e8eef5"; ctx.lineWidth = 0.4; ctx.beginPath(); for (let x = -5; x <= 5; x += 0.5) ctx.lineTo(x, -9 + Math.sin(x * 1.2) * 0.8); ctx.stroke();
+  } },
+  tansu: { w: 22, h: 25, hide: true, tells: ["sleeve"], draw() {
+    fillRR(-11, -25, 22, 25, 0.5, "#7a4a24");
+    for (let i = 0; i < 4; i++) { fillRR(-10, -24 + i * 6, 20, 5.2, 0.3, "#8e5a2e"); fillRR(-1.4, -21.8 + i * 6, 2.8, 0.9, 0.3, "#2b2b2b"); }
+    ctx.fillStyle = "#1f160e"; ctx.fillRect(-10.5, -1, 2, 1); ctx.fillRect(8.5, -1, 2, 1);
+  } },
+  andon: { w: 8, h: 19, hide: false, draw(o) {
+    line(-3, 0, -3, -19, "#3b2a1a", 0.6); line(3, 0, 3, -19, "#3b2a1a", 0.6);
+    const g = 0.75 + 0.1 * Math.sin(time * 3 + o.x);
+    ctx.fillStyle = `rgba(255,214,140,${g})`; ctx.fillRect(-3, -17, 6, 10);
+    ctx.strokeStyle = "#3b2a1a"; ctx.lineWidth = 0.4; ctx.strokeRect(-3, -17, 6, 10);
+  } },
+  noren: { w: 22, h: 56, hide: true, tells: ["legs"], draw(o) {
+    // 奥へ続く入口（暗い）にのれん
+    fillRR(-11, -56, 22, 56, 0.2, "#4a3626"); ctx.fillStyle = "#2a1d14"; ctx.fillRect(-9.5, -54, 19, 54);
+    if (o.tellDraw) o.tellDraw();
+    line(-11, -54, 11, -54, "#6b4a2c", 0.9);
+    for (let i = 0; i < 3; i++) { const x = -9.5 + i * 6.4; fillRR(x, -54, 6, 26 + Math.sin(time * 1.5 + i + o.x) * 0.4, 0.3, "#24476e"); }
+    ctx.fillStyle = "#f3efe4"; ctx.font = `700 4px ${SERIF}`; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText("ゆ", -6.3, -42); ctx.fillText("め", 0.1, -42); ctx.fillText("や", 6.5, -42);
+  } },
+  kamado: { w: 26, h: 16, hide: false, draw() {
+    fillRR(-13, -16, 26, 16, 1.2, "#b9a58c"); fillRR(-12, -15, 24, 2, 0.6, "#cdbba2");
+    for (const x of [-6, 6]) { ell(x, -7, 3.6, 3.2, "#2a1b12"); ell(x, -6, 2.4, 1.6, `rgba(255,${120 + Math.sin(time * 9 + x) * 30 | 0},40,.9)`); ell(x, -15.6, 4.2, 1, "#2b2b2b"); }
+  } },
+  taru: { w: 15, h: 19, hide: true, tells: ["lid"], draw(o) {
+    ctx.fillStyle = "#a8743e"; ctx.beginPath(); ctx.moveTo(-6, -19); ctx.quadraticCurveTo(-8, -9.5, -6, 0); ctx.lineTo(6, 0); ctx.quadraticCurveTo(8, -9.5, 6, -19); ctx.closePath(); ctx.fill();
+    for (const y of [-16, -10, -3.5]) line(-7.3, y, 7.3, y, "#4a3a2a", 0.9);
+    for (let x = -4; x <= 4; x += 2.6) line(x, -18.6, x * 1.1, -0.4, "rgba(80,50,20,.35)", 0.25);
+    const lift = o.tell === "lid" && o.ninja && !o.found ? o.twitch * 1.6 + 1.0 * G.tellScale : 0;
+    if (lift > 0.1) { ctx.fillStyle = "#14100c"; ctx.fillRect(-5.6, -19 - lift, 11.2, lift); if (o.tellDraw) o.tellDraw(lift); }
+    ell(0, -19 - lift, 6.3, 1.2, "#8a5a2c");
+  } },
+  tawara: { w: 26, h: 17, hide: true, tells: ["foot"], draw() {
+    const bale = (x, y) => { fillRR(x - 7, y - 8, 14, 8, 3.2, "#d8c58a"); for (const dx of [-3.5, 3.5]) line(x + dx, y - 8, x + dx, y, "#8a6a34", 0.6); line(x - 6, y - 4, x + 6, y - 4, "rgba(150,120,60,.4)", 0.3); };
+    bale(-6.5, 0); bale(6.5, 0); bale(0, -8.4);
+  } },
+  matsu: { w: 28, h: 60, hide: true, tells: ["scarf", "eyes"], draw() {
+    ctx.fillStyle = "#6b4a32"; ctx.beginPath(); ctx.moveTo(-3, 0); ctx.quadraticCurveTo(-1.5, -20, -4, -36); ctx.lineTo(2, -36); ctx.quadraticCurveTo(2.5, -20, 3.5, 0); ctx.fill();
+    line(-2, -30, -10, -38, "#6b4a32", 1.5); line(1, -34, 9, -44, "#6b4a32", 1.4);
+    for (const [x, y, r] of [[-11, -40, 6], [9, -46, 7], [-2, -50, 8], [0, -38, 6]]) { ell(x, y, r * 1.4, r * 0.62, "#2c5a32"); ell(x, y - 1, r * 1.2, r * 0.45, "#3d7444"); }
+  } },
+  toro: { w: 12, h: 26, hide: true, tells: ["sword"], draw() {
+    fillRR(-5, -3, 10, 3, 0.4, "#8d8a82"); fillRR(-1.8, -14, 3.6, 11, 0.3, "#9a978e");
+    fillRR(-4.2, -19, 8.4, 5, 0.4, "#a5a29a"); ctx.fillStyle = "#3a2c1c"; ctx.fillRect(-1.8, -18, 3.6, 3); ctx.fillStyle = `rgba(255,190,90,${0.4 + 0.2 * Math.sin(time * 4)})`; ctx.fillRect(-1.4, -17.6, 2.8, 2.2);
+    ctx.fillStyle = "#8d8a82"; ctx.beginPath(); ctx.moveTo(-6.5, -19); ctx.lineTo(6.5, -19); ctx.lineTo(2, -23); ctx.lineTo(-2, -23); ctx.fill(); ell(0, -24, 1.4, 1.4, "#8d8a82");
+  } },
+  bush: { w: 22, h: 13, hide: true, tells: ["eyes"], draw(o) {
+    for (const [x, y, r] of [[-6, -5, 5.5], [6, -5, 5.5], [0, -8, 6.5], [-9, -3, 3.5], [9, -3, 3.5]]) ell(x, y, r * 1.2, r, "#3f7a3c");
+    for (const [x, y, r] of [[-4, -8, 3], [4, -9, 3.3], [0, -11, 3]]) ell(x, y, r, r * 0.8, "#579a4c");
+    if (o.tellDraw) o.tellDraw();
+  } },
+  rock: { w: 20, h: 12, hide: true, tells: ["toes"], draw() {
+    ctx.fillStyle = "#7d7c78"; ctx.beginPath(); ctx.moveTo(-10, 0); ctx.quadraticCurveTo(-10, -9, -2, -12); ctx.quadraticCurveTo(8, -12, 10, 0); ctx.fill();
+    ctx.fillStyle = "#94938e"; ctx.beginPath(); ctx.moveTo(-6, -6); ctx.quadraticCurveTo(-4, -10, 1, -10.6); ctx.quadraticCurveTo(-2, -8, -6, -6); ctx.fill();
+    ell(4, -3, 3, 1, "rgba(80,120,60,.6)");
+  } },
+  ido: { w: 18, h: 26, hide: true, tells: ["hand"], draw() {
+    line(-7, -14, -7, -26, "#5a3c22", 1); line(7, -14, 7, -26, "#5a3c22", 1); fillRR(-9, -27.5, 18, 2, 0.4, "#4a3018");
+    line(0, -25.5, 0, -16, "#8a6a44", 0.25); fillRR(-1.4, -17, 2.8, 2.6, 0.3, "#7a5a34");
+    fillRR(-9, -14, 18, 14, 0.6, "#8f8a80"); for (let y = -11; y < 0; y += 3.5) line(-9, y, 9, y, "rgba(60,60,60,.35)", 0.3);
+    fillRR(-9.5, -15, 19, 2, 0.6, "#a29d93");
+  } },
+  bamboo: { w: 4, h: 100, hide: false, draw(o) {
+    const sw = Math.sin(time * 0.8 + o.x) * 0.6;
+    ctx.save(); ctx.rotate(sw * 0.01);
+    fillRR(-1.4, -100, 2.8, 100, 0.8, o.tone || "#6aa04a");
+    for (let y = -12; y > -100; y -= 11) line(-1.5, y, 1.5, y, "rgba(40,70,30,.55)", 0.45);
+    ctx.restore();
+  } },
+  mino: { w: 13, h: 44, hide: true, tells: ["hem"], draw(o) {
+    // 竹の柄の布（隠れ蓑）。忍者がいる時は少しだけ布のはしが見える
+    ctx.fillStyle = "#2f4a28"; ctx.fillRect(-6.5, -44, 13, 44);
+    for (const x of [-4.5, 0, 4.5]) { fillRR(x - 1.4, -44, 2.8, 44, 0.8, "#6aa04a"); for (let y = -8; y > -44; y -= 11) line(x - 1.5, y, x + 1.5, y, "rgba(40,70,30,.55)", 0.45); }
+    if (o.tellDraw) o.tellDraw();
+  } },
+  yoroi: { w: 14, h: 34, hide: true, tells: ["eyes"], draw(o) {
+    fillRR(-5, -3, 10, 3, 0.4, "#2a1c12"); line(0, -3, 0, -12, "#2a1c12", 1);
+    fillRR(-6, -24, 12, 13, 1, "#8a2a24"); for (let y = -22; y < -12; y += 2.2) line(-6, y, 6, y, "#e8c070", 0.35);
+    fillRR(-8, -24, 4, 7, 0.8, "#7a2420"); fillRR(4, -24, 4, 7, 0.8, "#7a2420");
+    ctx.fillStyle = "#1f1f22"; ctx.beginPath(); ctx.arc(0, -27.5, 4.6, Math.PI, 0); ctx.fill(); ctx.fillRect(-4.6, -27.5, 9.2, 2);
+    ctx.fillStyle = "#d8b048"; ctx.beginPath(); ctx.moveTo(-1, -31); ctx.lineTo(-5, -36); ctx.lineTo(-0.2, -32); ctx.moveTo(1, -31); ctx.lineTo(5, -36); ctx.lineTo(0.2, -32); ctx.fill();
+    fillRR(-3.6, -25.6, 7.2, 2.6, 0.6, "#111");
+    if (o.tellDraw) o.tellDraw();
+  } },
+  hako: { w: 18, h: 14, hide: true, tells: ["sleeve"], draw() {
+    fillRR(-9, -14, 18, 14, 0.5, "#5a3a22"); fillRR(-9.6, -15, 19.2, 2.4, 0.5, "#6e4a2c");
+    line(-9, -7, 9, -7, "#2a1c12", 0.5); ell(0, -10, 1.3, 1, "#c8a040");
+  } },
+};
+
+// 手がかり（物の座標で描く）。s＝大きさ、tw＝ピクッと動く量（0〜1）
+function drawTell(o, kind, s, tw, extra) {
+  const T = TYPES[o.type];
+  ctx.save();
+  if (kind === "toes") { // 足袋のつま先が下からのぞく
+    const x = o.side * (T.w * 0.25);
+    for (const dx of [-1.3, 1.3]) { ell(x + dx * s, -0.5 - tw * 0.3, 1.1 * s, 0.75 * s, NAVY); ell(x + dx * s + 0.4 * s, -0.7 - tw * 0.3, 0.35 * s, 0.4 * s, "#ffffff"); }
+  } else if (kind === "seam") { // ふすまのすき間にマフラーがはさまる
+    ctx.fillStyle = "#c0392b"; ctx.beginPath(); ctx.moveTo(0, -26); ctx.quadraticCurveTo(2.5 * s + tw, -24, 3.2 * s + tw * 1.4, -21.5 * 1); ctx.lineTo(2.2 * s, -21); ctx.quadraticCurveTo(1.5 * s, -23.5, 0, -24); ctx.fill();
+  } else if (kind === "shadow") { // 障子に人影
+    ctx.fillStyle = `rgba(40,30,30,${0.13 + 0.05 * s + tw * 0.06})`;
+    const x = o.side * 3 + tw * 0.4;
+    ctx.beginPath(); ctx.arc(x, -30, 3.2, 0, 7); ctx.fill(); ctx.fillRect(x - 3.6, -27, 7.2, 14); ctx.fillRect(x - 3, -13, 2.4, 12); ctx.fillRect(x + 0.6, -13, 2.4, 12);
+  } else if (kind === "feet") { // 掛け軸の下から足がぶらさがる
+    for (const dx of [-1.8, 1.8]) { ctx.fillStyle = NAVY; ctx.fillRect(dx - 0.8 * s, -15, 1.6 * s, 1.6 * s + tw * 0.4); ell(dx, -13.2 + tw * 0.4, 1.1 * s, 0.7 * s, NAVY); }
+  } else if (kind === "scarf") { // マフラーのはしが横からひらひら
+    const T2 = TYPES[o.type], x0 = o.type === "matsu" ? o.side * 3 : o.side * (T2.w / 2 - 0.5), y0 = o.type === "matsu" ? -24 : -20;
+    ctx.fillStyle = "#c0392b"; ctx.beginPath(); ctx.moveTo(x0, y0);
+    const fl = Math.sin(time * 6 + o.x) * (0.8 + tw * 1.5);
+    ctx.quadraticCurveTo(x0 + o.side * 3 * s, y0 + fl, x0 + o.side * 5.5 * s, y0 + 1 + fl * 1.4);
+    ctx.lineTo(x0 + o.side * 5 * s, y0 + 2.6 + fl * 1.4); ctx.quadraticCurveTo(x0 + o.side * 2.5 * s, y0 + 2 + fl, x0, y0 + 1.6); ctx.fill();
+  } else if (kind === "knot") { // 頭巾の結び目が上からのぞく
+    const T2 = TYPES[o.type], top = -T2.h, x = o.type === "byobu" ? o.side * 7 : 0;
+    const up = 1.2 * s + tw * 0.8;
+    ctx.fillStyle = NAVY; ctx.beginPath(); ctx.ellipse(x, top + 0.2, 2.6 * s, up, 0, Math.PI, 0); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(x - 0.4, top - up + 0.2); ctx.lineTo(x - 1.8 * s, top - up - 1.2 * s); ctx.lineTo(x - 0.2, top - up + 0.8); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(x + 0.4, top - up + 0.2); ctx.lineTo(x + 1.8 * s, top - up - 1.2 * s); ctx.lineTo(x + 0.2, top - up + 0.8); ctx.fill();
+  } else if (kind === "eyes") { // 目がのぞく（ときどきまばたき）
+    const T2 = TYPES[o.type];
+    let x = 0, y = -T2.h + 0.4;
+    if (o.type === "bush") { x = o.side * 3; y = -6.5; }
+    if (o.type === "matsu") { x = o.side * 4; y = -44; }
+    if (o.type === "yoroi") { x = 0; y = -24.3; }
+    const blink = tw > 0.7 ? 0.15 : 1;
+    if (o.type === "tsubo") { ctx.fillStyle = NAVY; ctx.beginPath(); ctx.ellipse(0, y, 2.4 * s, 1.2 * s, 0, Math.PI, 0); ctx.fill(); y -= 0.5; }
+    for (const dx of [-0.9, 0.9]) { ell(x + dx * s, y, 0.55 * s, 0.45 * s * blink, "#fffbe8"); ell(x + dx * s, y, 0.24 * s, 0.24 * s * blink, "#111"); }
+  } else if (kind === "sleeve") { // 引き出し・ふたから袖がはみ出す
+    const y = o.type === "tansu" ? -12.3 : -14.3, x = o.side * 3;
+    ctx.fillStyle = NAVY2; ctx.beginPath(); ctx.moveTo(x - 1.6 * s, y); ctx.lineTo(x + 1.6 * s, y); ctx.lineTo(x + 0.8 * s + tw * 0.5, y + 2.8 * s); ctx.lineTo(x - 1.2 * s, y + 2.3 * s); ctx.fill();
+  } else if (kind === "lid") { // 樽のふたが少し浮いて、目
+    const lift = extra || 1;
+    for (const dx of [-1, 1]) { ell(dx * 1.2, -19 - lift / 2, 0.5, 0.4 * Math.min(1, lift), "#fffbe8"); ell(dx * 1.2, -19 - lift / 2, 0.22, 0.22 * Math.min(1, lift), "#111"); }
+  } else if (kind === "foot") { // 米俵の横から足
+    const x = o.side * 13;
+    ctx.fillStyle = NAVY; ctx.beginPath(); ctx.ellipse(x + o.side * tw * 0.4, -1, 1.8 * s, 1 * s, 0, 0, 7); ctx.fill();
+    ell(x + o.side * (1.2 * s + tw * 0.4), -1.2, 0.5 * s, 0.5 * s, "#fff");
+  } else if (kind === "legs") { // のれんの奥に足（暗い中にうっすら）
+    const x = o.side * 3;
+    ctx.fillStyle = `rgba(60,64,90,${0.65 + tw * 0.2})`;
+    ctx.fillRect(x - 2.2, -24, 1.8, 23); ctx.fillRect(x + 0.4, -24, 1.8, 23);
+    ell(x - 1.3, -0.8, 1.5, 0.8, "#d8dbe6"); ell(x + 1.3, -0.8, 1.5, 0.8, "#d8dbe6");
+  } else if (kind === "sword") { // 灯籠の横から刀のさや
+    const x = o.side * 2.6;
+    ctx.save(); ctx.translate(x, -8); ctx.rotate(o.side * (0.4 + tw * 0.06));
+    ctx.fillStyle = "#1b1b1f"; ctx.fillRect(-0.4 * s, -5.5 * s, 0.8 * s, 5.5 * s); ctx.fillStyle = "#c9a33a"; ctx.fillRect(-1 * s, -0.3, 2 * s, 0.6);
+    ctx.restore();
+  } else if (kind === "hand") { // 井戸のふちに指
+    const x = o.side * 5;
+    ctx.fillStyle = "#e3b48c"; for (let i = 0; i < 4; i++) fillRR(x - 1.6 * s + i * 0.85 * s, -15.6 - tw * 0.3, 0.7 * s, 1.4 * s, 0.3, "#e3b48c");
+  } else if (kind === "hem") { // 隠れ蓑のすそから足先、布のはしがめくれる
+    ctx.fillStyle = "#24361f"; ctx.beginPath(); ctx.moveTo(6.5, -10); ctx.lineTo(6.5 + 1.4 * s + tw * 0.6, -6); ctx.lineTo(6.5, -4); ctx.fill();
+    for (const dx of [-1.2, 1.2]) ell(o.side * 2 + dx * s, -0.5, 1 * s, 0.7 * s, NAVY);
+  }
+  ctx.restore();
+}
+
+// 忍者（飛び出すところ）
+function drawNinja(x, y, s, pose, scarf) {
+  ctx.save(); ctx.translate(x, y); ctx.scale(s, s);
+  // マフラー
+  ctx.fillStyle = scarf; ctx.beginPath(); ctx.moveTo(-1.5, -19); ctx.quadraticCurveTo(-6, -19 + Math.sin(time * 12) * 1.5, -9, -16 + Math.sin(time * 12 + 1) * 2); ctx.lineTo(-8.5, -14.5); ctx.quadraticCurveTo(-5, -17, -1.5, -17.5); ctx.fill();
+  // 体
+  fillRR(-3.2, -17.5, 6.4, 9, 1.5, NAVY);
+  ctx.strokeStyle = NAVY; ctx.lineCap = "round"; ctx.lineWidth = 2;
+  const up = pose === "pop" ? 1 : 0;
+  ctx.beginPath(); ctx.moveTo(-2.8, -15.5); ctx.lineTo(-5.5, -15.5 - up * 5); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(2.8, -15.5); ctx.lineTo(5.5, -15.5 - up * 5); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(-1.5, -9); ctx.lineTo(-2.5 - up, -3); ctx.stroke(); ctx.beginPath(); ctx.moveTo(1.5, -9); ctx.lineTo(2.5 + up, -3); ctx.stroke();
+  ctx.fillStyle = scarf; ctx.fillRect(-3.2, -11, 6.4, 1.2);
+  // 頭
+  ctx.fillStyle = NAVY; ctx.beginPath(); ctx.arc(0, -21.5, 4, 0, 7); ctx.fill();
+  fillRR(-3.3, -22.6, 6.6, 2.2, 1, "#f2c9a0");
+  ell(-1.3, -21.5, 0.55, pose === "pop" ? 0.7 : 0.4, "#111"); ell(1.3, -21.5, 0.55, pose === "pop" ? 0.7 : 0.4, "#111");
+  ctx.beginPath(); ctx.moveTo(-0.3, -25.2); ctx.lineTo(-2.5, -27.2); ctx.lineTo(-0.1, -24.4); ctx.moveTo(0.3, -25.2); ctx.lineTo(2.5, -27.2); ctx.lineTo(0.1, -24.4); ctx.fill();
+  if (pose === "pop") { ctx.fillStyle = "#fff"; ctx.font = `900 3px ${FONT}`; ctx.textAlign = "center"; ctx.fillText("!!", 5.5, -26); }
+  ctx.restore();
+}
+
+// ---------- 状態 ----------
+let scene = "title";
+let time = 0, buttons = [];
+let G = null;
+const SCARVES = ["#c0392b", "#d35400", "#8e44ad", "#16a085", "#2980b9", "#c0392b", "#f39c12"];
+
+function maxCam() { return G ? Math.max(0, G.st.W * u - W) : 0; }
+
+function startStage(i) {
+  const st = STAGES[i];
+  const objs = st.objs.map(([type, x]) => ({ type, x, ninja: false, found: false, tell: null, side: Math.random() < 0.5 ? -1 : 1, ph: Math.random() * 10, twitch: 0, mark: 0 }));
+  // 隠れる物を毎回ランダムに選ぶ
+  const cand = objs.filter(o => TYPES[o.type].hide);
+  for (let k = cand.length - 1; k > 0; k--) { const j = Math.floor(Math.random() * (k + 1)); [cand[k], cand[j]] = [cand[j], cand[k]]; }
+  cand.slice(0, st.ninjas).forEach((o, k) => { o.ninja = true; o.scarf = SCARVES[k % SCARVES.length]; const ts = TYPES[o.type].tells; o.tell = ts[Math.floor(Math.random() * ts.length)]; });
+  // 竹林の背景の竹
+  const deco = [];
+  if (st.theme === "chikurin") for (let x = 2; x < st.W; x += 5 + Math.random() * 4) deco.push({ type: "bamboo", x, tone: ["#5b8f40", "#6aa04a", "#77ad55"][Math.floor(Math.random() * 3)], back: true });
+  G = { idx: i, st, objs, deco, found: 0, timeLeft: st.time, camX: 0, vel: 0, state: "play", t: 0, pops: [], misses: [], hint: null, tellScale: st.tell, lastTick: 0, hintUsed: 0 };
+  // 最初は真ん中あたりから
+  G.camX = clamp(st.W * u * 0.5 - W / 2, 0, maxCam());
+  scene = "play";
+}
+
+// ---------- 入力 ----------
+let drag = null;
+cv.addEventListener("pointerdown", e => {
+  audio();
+  try { cv.setPointerCapture(e.pointerId); } catch (err) {} // 画面の外で離しても受け取る
+  drag = { x: e.clientX, y: e.clientY, sx: e.clientX, lastX: e.clientX, lastT: performance.now(), moved: false, id: e.pointerId, cam: G ? G.camX : 0, mini: e.clientY > H - HUD_B };
+  if (G) G.vel = 0;
+});
+cv.addEventListener("pointermove", e => {
+  if (!drag || e.pointerId !== drag.id) return;
+  if (Math.abs(e.clientX - drag.sx) > 8 || Math.abs(e.clientY - drag.y) > 8) drag.moved = true;
+  if (scene === "play" && G && G.state === "play") {
+    if (drag.mini) { jumpMini(e.clientX); }
+    else if (drag.moved) {
+      G.camX = clamp(drag.cam - (e.clientX - drag.sx), 0, maxCam());
+      // 離したあとの慣性：速さは上限つき、なめらかに
+      const now = performance.now(), dt = Math.max(12, now - drag.lastT);
+      const v = clamp(-(e.clientX - drag.lastX) / dt * 1000, -2400, 2400);
+      G.vel = lerp(G.vel, v, 0.5); drag.lastX = e.clientX; drag.lastT = now;
+    }
+  }
+});
+cv.addEventListener("pointerup", e => {
+  if (!drag || e.pointerId !== drag.id) return;
+  const d = drag; drag = null;
+  if (performance.now() - d.lastT > 80 && G) G.vel = 0;
+  if (!d.moved) tap(e.clientX, e.clientY, d.mini);
+});
+cv.addEventListener("pointercancel", () => { drag = null; });
+function jumpMini(x) {
+  const mw = W - 24, k = clamp((x - 12) / mw, 0, 1);
+  G.camX = clamp(k * G.st.W * u - W / 2, 0, maxCam()); G.vel = 0;
+}
+
+function tap(x, y, mini) {
+  for (let i = buttons.length - 1; i >= 0; i--) {
+    const b = buttons[i];
+    if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) { b.fn(); return; }
+  }
+  if (scene === "title") { scene = "select"; return; }
+  if (scene !== "play" || !G || G.state !== "play") return;
+  if (mini) { jumpMini(x); return; }
+  if (y < HUD_T || y > H - HUD_B) return;
+  // 世界の単位座標へ
+  const wx = (x + G.camX) / u, wy = (y - HUD_T) / u - FLOOR; // 足もと基準（上がマイナス）
+  let hit = null, best = 1e9;
+  for (const o of G.objs) {
+    if (o.found) continue;
+    const T = TYPES[o.type], b = hitBox(o);
+    if (wx >= b.x0 && wx <= b.x1 && wy >= b.y0 && wy <= b.y1) { const d = Math.abs(wx - o.x); if (d < best) { best = d; hit = o; } }
+  }
+  if (hit && hit.ninja) {
+    hit.found = true; G.found++;
+    G.pops.push({ o: hit, t: 0 });
+    SFX.found(); medal(1); // 共通メダル：忍者1人につき1枚
+    if (G.hint && G.hint.o === hit) G.hint = null;
+    if (G.found >= G.st.ninjas) finishStage(true);
+  } else {
+    G.timeLeft = Math.max(0, G.timeLeft - 3);
+    G.misses.push({ x: x + G.camX, y, t: 0 });
+    SFX.miss();
+    if (hit) hit.mark = 1; // 調べた物（いなかった）
+  }
+}
+// 当たりの範囲：物の外わく＋手がかりのはみ出し（少し広め）
+function hitBox(o) {
+  const T = TYPES[o.type], pad = 1.5;
+  let x0 = o.x - T.w / 2 - pad, x1 = o.x + T.w / 2 + pad, y0 = -T.h - pad, y1 = 1.5;
+  if (o.ninja) {
+    if (o.tell === "scarf") { if (o.side > 0) x1 += 6; else x0 -= 6; }
+    if (o.tell === "knot") y0 -= 4;
+    if (o.tell === "foot") { if (o.side > 0) x1 += 3; else x0 -= 3; }
+    if (o.tell === "sword") { if (o.side > 0) x1 += 3; else x0 -= 3; }
+  }
+  return { x0, x1, y0, y1 };
+}
+
+function useHint() {
+  if (!G || G.state !== "play" || G.timeLeft <= 10) return;
+  const left = G.objs.filter(o => o.ninja && !o.found);
+  if (!left.length) return;
+  // 画面の真ん中にいちばん近い忍者
+  const cx = (G.camX + W / 2) / u;
+  left.sort((a, b) => Math.abs(a.x - cx) - Math.abs(b.x - cx));
+  G.hint = { o: left[0], t: 0 };
+  G.timeLeft -= 10; G.hintUsed++;
+  SFX.hint();
+}
+
+function finishStage(win) {
+  G.state = win ? "clear" : "fail"; G.t = 0;
+  if (win) {
+    const r = G.timeLeft / G.st.time;
+    G.stars = r >= 0.5 ? 3 : r >= 0.25 ? 2 : 1;
+    save.best[G.idx] = Math.max(save.best[G.idx] || 0, G.stars);
+    save.cleared = Math.max(save.cleared, G.idx + 1);
+    writeSave();
+    medal(5); // 共通メダル：クリアで5枚
+    SFX.clear();
+  } else SFX.fail();
+}
+
+// ---------- 更新 ----------
+function update(dt) {
+  time += dt;
+  if (scene !== "play" || !G) return;
+  G.t += dt;
+  if (G.state === "play") {
+    G.timeLeft -= dt;
+    if (G.timeLeft <= 10 && Math.floor(G.timeLeft) !== G.lastTick) { G.lastTick = Math.floor(G.timeLeft); if (G.timeLeft > 0) SFX.tick(); }
+    if (G.timeLeft <= 0) { G.timeLeft = 0; finishStage(false); }
+  }
+  // スライドの慣性
+  if (!drag && Math.abs(G.vel) > 5) { G.camX = clamp(G.camX + G.vel * dt, 0, maxCam()); G.vel *= Math.pow(0.002, dt); }
+  // 手がかりがときどきピクッと動く
+  for (const o of G.objs) {
+    const per = 2.6 + (o.ph % 2.5);
+    const p = (time + o.ph) % per;
+    o.twitch = p < 0.45 ? Math.sin(p / 0.45 * Math.PI) : 0;
+    o.mark = Math.max(0, o.mark - dt * 0.6);
+  }
+  for (const p of G.pops) p.t += dt;
+  G.pops = G.pops.filter(p => p.t < 1.4);
+  for (const m of G.misses) m.t += dt;
+  G.misses = G.misses.filter(m => m.t < 0.9);
+  if (G.hint) { G.hint.t += dt; if (G.hint.t > 3) G.hint = null; }
+}
+
+// ---------- 背景 ----------
+function drawBackdrop(theme, ww) {
+  const top = HUD_T, fy = top + FLOOR * u, x0 = -G.camX;
+  ctx.save();
+  if (theme === "washitsu" || theme === "tenshu") {
+    const wall = theme === "washitsu" ? "#e9dcbf" : "#5b3b25", floor = theme === "washitsu" ? "#c9c07a" : "#7a5233";
+    ctx.fillStyle = wall; ctx.fillRect(0, top, W, fy - top);
+    ctx.fillStyle = theme === "washitsu" ? "#6a4426" : "#3a2414"; ctx.fillRect(0, top, W, 6 * u); // なげし
+    for (let x = 0; x < ww; x += 54) { const sx = x0 + x * u; if (sx > -6 * u && sx < W + 6 * u) { ctx.fillStyle = theme === "washitsu" ? "#7a5030" : "#3a2414"; ctx.fillRect(sx - 1.6 * u, top, 3.2 * u, fy - top); } }
+    if (theme === "tenshu") { for (let x = 27; x < ww; x += 54) { const sx = x0 + x * u; ctx.fillStyle = "#a9c7e0"; ctx.fillRect(sx - 6 * u, top + 14 * u, 12 * u, 14 * u); ctx.fillStyle = "#3a2414"; for (let k = -2; k <= 2; k++) ctx.fillRect(sx + k * 2.6 * u - 0.4 * u, top + 14 * u, 0.8 * u, 14 * u); } }
+    ctx.fillStyle = floor; ctx.fillRect(0, fy, W, H - HUD_B - fy);
+    if (theme === "washitsu") { // 畳のふち
+      ctx.fillStyle = "#3b4a3a"; ctx.fillRect(0, fy + 1 * u, W, 0.9 * u);
+      for (let x = 0; x < ww; x += 36) { const sx = x0 + x * u; ctx.fillStyle = "#3b4a3a"; ctx.fillRect(sx, fy + 1 * u, 0.9 * u, (100 - FLOOR) * u); }
+      ctx.strokeStyle = "rgba(120,110,50,.25)"; ctx.lineWidth = 1; for (let y = fy + 3 * u; y < H - HUD_B; y += 1.6 * u) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+    } else { ctx.strokeStyle = "rgba(40,20,10,.4)"; ctx.lineWidth = 1; for (let y = fy + 4 * u; y < H - HUD_B; y += 6 * u) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); } }
+    ctx.fillStyle = "rgba(0,0,0,.18)"; ctx.fillRect(0, fy, W, 1.2 * u);
+  } else if (theme === "daidokoro") {
+    ctx.fillStyle = "#d9ccb0"; ctx.fillRect(0, top, W, fy - top);
+    ctx.fillStyle = "#6a4a2c"; ctx.fillRect(0, top + (FLOOR - 20) * u, W, 20 * u);
+    for (let x = 0; x < ww; x += 4) { const sx = x0 + x * u; if (sx > -u && sx < W) { ctx.fillStyle = "rgba(0,0,0,.18)"; ctx.fillRect(sx, top + (FLOOR - 20) * u, 0.3 * u, 20 * u); } }
+    ctx.fillStyle = "#3a2a1c"; ctx.fillRect(0, top, W, 5 * u);
+    // 壁の棚と器、ぶらさがった唐辛子
+    for (let x = 20; x < ww; x += 58) {
+      const sx = x0 + x * u; if (sx < -30 * u || sx > W + 30 * u) continue;
+      const sy = top + 30 * u;
+      ctx.fillStyle = "#5a3e26"; ctx.fillRect(sx - 14 * u, sy, 28 * u, 1.6 * u);
+      ctx.fillStyle = "#3a2a1c"; ctx.fillRect(sx - 12 * u, sy + 1.6 * u, 1.2 * u, 3 * u); ctx.fillRect(sx + 10.8 * u, sy + 1.6 * u, 1.2 * u, 3 * u);
+      const pots = [["#e9e2d0", 4, 2.6], ["#3d5a78", 3, 4.2], ["#a0522d", 3.4, 3.2], ["#e9e2d0", 3, 2.2]];
+      pots.forEach(([c, r, hh], k) => { const px = sx + (-9 + k * 6) * u; ctx.fillStyle = c; ctx.beginPath(); ctx.ellipse(px, sy - hh * u * 0.5, r * u, hh * u * 0.5, 0, 0, 7); ctx.fill(); });
+      ctx.strokeStyle = "#6b4a2c"; ctx.lineWidth = 0.3 * u; ctx.beginPath(); ctx.moveTo(sx + 22 * u, top + 5 * u); ctx.lineTo(sx + 22 * u, top + 16 * u); ctx.stroke();
+      for (let k = 0; k < 4; k++) { ctx.fillStyle = "#c0392b"; ctx.beginPath(); ctx.ellipse(sx + (22 + (k % 2 ? 1 : -1)) * u, top + (12 + k * 2.4) * u, 0.7 * u, 1.6 * u, (k % 2 ? 0.4 : -0.4), 0, 7); ctx.fill(); }
+    }
+    ctx.fillStyle = "#8a6a48"; ctx.fillRect(0, fy, W, H - HUD_B - fy);
+    ctx.fillStyle = "rgba(60,40,20,.18)"; for (let i = 0; i < 60; i++) { const sx = ((i * 97) % (ww)) * u + x0; ctx.beginPath(); ctx.arc(sx, fy + ((i * 37) % 30 + 3) * u, 0.5 * u, 0, 7); ctx.fill(); }
+  } else if (theme === "niwa") {
+    const g = ctx.createLinearGradient(0, top, 0, fy); g.addColorStop(0, "#8fcbec"); g.addColorStop(1, "#d6eef7"); ctx.fillStyle = g; ctx.fillRect(0, top, W, fy - top);
+    // 遠くの山（ゆっくり動く）
+    ctx.fillStyle = "#a9c6b6"; ctx.beginPath(); ctx.moveTo(0, fy - 14 * u);
+    for (let x = 0; x <= W + 20; x += 20) { const wx = (x + G.camX * 0.3) / u; ctx.lineTo(x, fy - (18 + Math.sin(wx * 0.05) * 6 + Math.sin(wx * 0.13) * 3) * u); }
+    ctx.lineTo(W, fy); ctx.lineTo(0, fy); ctx.fill();
+    // 塀
+    ctx.fillStyle = "#efe7d6"; ctx.fillRect(0, fy - 16 * u, W, 16 * u); ctx.fillStyle = "#4a4a52"; ctx.fillRect(0, fy - 18 * u, W, 2.6 * u);
+    ctx.fillStyle = "#8a7a62"; ctx.fillRect(0, fy - 3 * u, W, 3 * u);
+    ctx.fillStyle = "#d8d1bd"; ctx.fillRect(0, fy, W, H - HUD_B - fy);
+    ctx.strokeStyle = "rgba(150,140,110,.45)"; ctx.lineWidth = 1;
+    for (let y = fy + 3 * u; y < H - HUD_B; y += 2.5 * u) { ctx.beginPath(); for (let x = 0; x <= W; x += 12) ctx.lineTo(x, y + Math.sin((x + G.camX) * 0.03 + y) * 0.6 * u); ctx.stroke(); }
+  } else if (theme === "chikurin") {
+    const g = ctx.createLinearGradient(0, top, 0, fy); g.addColorStop(0, "#cfe3b8"); g.addColorStop(1, "#9fc27c"); ctx.fillStyle = g; ctx.fillRect(0, top, W, fy - top);
+    ctx.fillStyle = "#5e7a3c"; ctx.fillRect(0, fy, W, H - HUD_B - fy);
+    ctx.fillStyle = "rgba(255,255,220,.18)"; for (let i = 0; i < 6; i++) { const sx = ((i * 61 + 13) % ww) * u + x0; ctx.beginPath(); ctx.moveTo(sx, top); ctx.lineTo(sx + 10 * u, top); ctx.lineTo(sx + 30 * u, fy); ctx.lineTo(sx + 16 * u, fy); ctx.fill(); }
+  }
+  ctx.restore();
+}
+
+// ---------- 描画 ----------
+function draw() {
+  buttons = [];
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.fillStyle = "#2a1e14"; ctx.fillRect(0, 0, W, H);
+  if (scene === "title") drawTitle();
+  else if (scene === "select") drawSelect();
+  else drawPlay();
+}
+
+function drawObj(o) {
+  const T = TYPES[o.type];
+  const sx = o.x * u - G.camX;
+  if (sx < -(T.w + 12) * u || sx > W + (T.w + 12) * u) return;
+  ctx.save();
+  ctx.translate(sx, HUD_T + FLOOR * u); ctx.scale(u, u);
+  // 影
+  if (T.h < 60) ell(0, 0.2, T.w * 0.5, 1, "rgba(0,0,0,.18)");
+  const showTell = o.ninja && !o.found;
+  const s = G.tellScale, tw = o.twitch;
+  o.tellDraw = showTell ? (extra) => drawTell(o, o.tell, s, tw, extra) : null;
+  // 手前に描く手がかり（物の上に出るもの）と、奥に描くもの
+  const behind = ["scarf", "knot", "sword", "foot"].includes(o.tell);
+  if (showTell && behind) drawTell(o, o.tell, s, tw);
+  T.draw(o);
+  const inside = ["shadow", "legs", "eyes", "lid", "hem"].includes(o.tell) && ["shoji", "noren", "bush", "yoroi", "taru", "mino"].includes(o.type);
+  if (showTell && !behind && !inside) drawTell(o, o.tell, s, tw);
+  if (showTell && o.tell === "eyes" && (o.type === "tsubo" || o.type === "matsu")) {} // 上で描いた
+  // 外した物に「×」の印（少しの間）
+  if (o.mark > 0) { ctx.globalAlpha = o.mark; ctx.strokeStyle = "#c0392b"; ctx.lineWidth = 0.8; const y = -T.h / 2; line(-2, y - 2, 2, y + 2, "#c0392b", 0.8); line(2, y - 2, -2, y + 2, "#c0392b", 0.8); ctx.globalAlpha = 1; }
+  // 見つけた物に印
+  if (o.found) { ctx.fillStyle = "rgba(192,57,43,.9)"; ctx.font = `900 4px ${SERIF}`; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.save(); ctx.translate(T.w * 0.3, -T.h * 0.7); ctx.rotate(-0.2); ctx.strokeStyle = "rgba(192,57,43,.9)"; ctx.lineWidth = 0.4; ctx.beginPath(); ctx.arc(0, 0, 3, 0, 7); ctx.stroke(); ctx.fillText("済", 0, 0.2); ctx.restore(); }
+  ctx.restore();
+}
+
+function drawPlay() {
+  const st = G.st;
+  drawBackdrop(st.theme, st.W);
+  // 竹林の奥の竹
+  ctx.save(); ctx.beginPath(); ctx.rect(0, HUD_T, W, SH); ctx.clip();
+  for (const d of G.deco) {
+    const sx = d.x * u - G.camX; if (sx < -5 * u || sx > W + 5 * u) continue;
+    ctx.save(); ctx.translate(sx, HUD_T + (FLOOR + 2) * u); ctx.scale(u, u); ctx.globalAlpha = 0.85; TYPES.bamboo.draw(d); ctx.restore();
+  }
+  for (const o of G.objs) drawObj(o);
+  // 飛び出す忍者と煙
+  for (const p of G.pops) {
+    const T = TYPES[p.o.type], sx = p.o.x * u - G.camX, by = HUD_T + FLOOR * u;
+    const k = p.t;
+    // 煙
+    for (let i = 0; i < 7; i++) {
+      const a = i / 7 * Math.PI * 2, r = (4 + k * 14) * u;
+      ctx.globalAlpha = clamp(1 - k / 1.1, 0, 1) * 0.85; ell(sx + Math.cos(a) * r * 0.6, by - T.h * 0.5 * u + Math.sin(a) * r * 0.4, (3 + k * 5) * u, (2.4 + k * 4) * u, "#f4f1ea");
+    }
+    ctx.globalAlpha = 1;
+    if (k < 1.0) { const jump = Math.sin(clamp(k / 0.9, 0, 1) * Math.PI) * 22, fly = k > 0.6 ? (k - 0.6) * 90 : 0; drawNinja(sx, by - (T.h * 0.4 + jump + fly) * u, u * 1.1, "pop", p.o.scarf); }
+    if (k < 1.2) {
+      ctx.globalAlpha = clamp(1.2 - k, 0, 1);
+      ctx.fillStyle = "#1b1b1b"; ctx.font = `900 ${Math.round(6 * u)}px ${SERIF}`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.lineWidth = 0.9 * u; ctx.strokeStyle = "#fff"; ctx.strokeText("ドロン！", sx, by - (T.h + 12 + k * 6) * u); ctx.fillText("ドロン！", sx, by - (T.h + 12 + k * 6) * u);
+      ctx.globalAlpha = 1;
+    }
+  }
+  // 外れの印
+  for (const m of G.misses) {
+    const sx = m.x - G.camX; ctx.globalAlpha = clamp(1 - m.t / 0.9, 0, 1);
+    ctx.strokeStyle = "#c0392b"; ctx.lineWidth = 4; ctx.lineCap = "round";
+    ctx.beginPath(); ctx.moveTo(sx - 12, m.y - 12); ctx.lineTo(sx + 12, m.y + 12); ctx.moveTo(sx + 12, m.y - 12); ctx.lineTo(sx - 12, m.y + 12); ctx.stroke();
+    ctx.fillStyle = "#c0392b"; ctx.font = `900 16px ${FONT}`; ctx.textAlign = "center"; ctx.lineWidth = 3; ctx.strokeStyle = "#fff"; ctx.strokeText("-3秒", sx, m.y - 22 - m.t * 20); ctx.fillText("-3秒", sx, m.y - 22 - m.t * 20);
+    ctx.globalAlpha = 1;
+  }
+  // ヒント：手がかりのまわりに光る輪、画面の外なら矢印
+  if (G.hint) {
+    const o = G.hint.o, T = TYPES[o.type], sx = o.x * u - G.camX, sy = HUD_T + (FLOOR - T.h / 2) * u;
+    const a = 0.6 + 0.4 * Math.sin(time * 8);
+    if (sx < 0 || sx > W) {
+      const left = sx < 0, ax = left ? 26 : W - 26, ay = HUD_T + SH * 0.45;
+      ctx.fillStyle = `rgba(255,214,60,${a})`; ctx.beginPath();
+      if (left) { ctx.moveTo(ax - 14, ay); ctx.lineTo(ax + 8, ay - 16); ctx.lineTo(ax + 8, ay + 16); } else { ctx.moveTo(ax + 14, ay); ctx.lineTo(ax - 8, ay - 16); ctx.lineTo(ax - 8, ay + 16); }
+      ctx.fill();
+    } else {
+      ctx.strokeStyle = `rgba(255,214,60,${a})`; ctx.lineWidth = 4; ctx.beginPath(); ctx.ellipse(sx, sy, (T.w * 0.5 + 4) * u, (T.h * 0.5 + 4) * u, 0, 0, 7); ctx.stroke();
+    }
+  }
+  ctx.restore();
+  drawHud();
+  if (G.state === "clear" || G.state === "fail") drawResult();
+}
+
+function drawNinjaIcon(x, y, r, on) {
+  ctx.save(); ctx.translate(x, y);
+  ctx.fillStyle = on ? NAVY : "rgba(255,255,255,.18)"; ctx.beginPath(); ctx.arc(0, 0, r, 0, 7); ctx.fill();
+  if (on) { fillRR(-r * 0.8, -r * 0.3, r * 1.6, r * 0.55, r * 0.25, "#f2c9a0"); ell(-r * 0.3, -r * 0.02, r * 0.13, r * 0.13, "#111"); ell(r * 0.3, -r * 0.02, r * 0.13, r * 0.13, "#111"); }
+  else { ctx.strokeStyle = "rgba(255,255,255,.55)"; ctx.lineWidth = 1.5; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.arc(0, 0, r - 1, 0, 7); ctx.stroke(); ctx.setLineDash([]); ctx.fillStyle = "rgba(255,255,255,.7)"; ctx.font = `900 ${r}px ${FONT}`; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText("?", 0, 1); }
+  ctx.restore();
+}
+
+function drawHud() {
+  const st = G.st;
+  // 上
+  ctx.fillStyle = "#2a1e14"; ctx.fillRect(0, 0, W, HUD_T);
+  button(8, 10, 38, 36, "‹", () => { scene = "select"; }, { size: 22, bg: "#4a3626", fg: "#f3e6cc" });
+  ctx.fillStyle = "#f3e6cc"; ctx.font = `900 16px ${SERIF}`; ctx.textAlign = "left"; ctx.textBaseline = "middle";
+  ctx.fillText(`其の${["一", "二", "三", "四", "五"][G.idx]}　${st.name}`, 54, 22);
+  // 忍者アイコン
+  const n = st.ninjas, r = Math.min(10, (W - 160) / n / 2.6);
+  for (let i = 0; i < n; i++) drawNinjaIcon(64 + i * r * 2.5, 44, r, i < G.found);
+  // ヒント
+  const can = G.state === "play" && G.timeLeft > 10;
+  button(W - 92, 10, 84, 36, "ヒント -10秒", useHint, { size: 12, bg: can ? "#d6a93a" : "#5a4a3a", fg: can ? "#2a1e14" : "#9a8a76" });
+  // 時間の帯
+  const k = clamp(G.timeLeft / st.time, 0, 1);
+  ctx.fillStyle = "#4a3626"; ctx.fillRect(0, HUD_T - 6, W, 6);
+  ctx.fillStyle = k > 0.25 ? "#e8b84a" : (Math.floor(time * 4) % 2 ? "#e74c3c" : "#b03a2e"); ctx.fillRect(0, HUD_T - 6, W * k, 6);
+  ctx.fillStyle = "#f3e6cc"; ctx.font = `800 12px ${FONT}`; ctx.textAlign = "right";
+  ctx.fillText(`${Math.ceil(G.timeLeft)}秒`, W - 100, 44);
+  // 下：地図
+  const my = H - HUD_B, mw = W - 24, mx = 12;
+  ctx.fillStyle = "#2a1e14"; ctx.fillRect(0, my, W, HUD_B);
+  fillRR(mx, my + 10, mw, 30, 6, "#4a3626");
+  for (const o of G.objs) {
+    const T = TYPES[o.type], x = mx + o.x / st.W * mw, w = Math.max(2, T.w / st.W * mw), h = Math.min(22, T.h / 100 * 26);
+    ctx.fillStyle = o.found ? "#c0392b" : "rgba(243,230,204,.35)"; ctx.fillRect(x - w / 2, my + 38 - h, w, h);
+  }
+  const vx = mx + G.camX / (st.W * u) * mw, vw = W / (st.W * u) * mw;
+  ctx.strokeStyle = "#f3e6cc"; ctx.lineWidth = 2; rr(vx, my + 9, Math.min(vw, mw), 32, 5); ctx.stroke();
+}
+
+function button(x, y, w, h, label, fn, o) {
+  o = o || {};
+  fillRR(x, y, w, h, 8, o.bg || "#d6a93a");
+  ctx.fillStyle = o.fg || "#2a1e14"; ctx.font = `900 ${o.size || 16}px ${o.serif ? SERIF : FONT}`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillText(label, x + w / 2, y + h / 2 + 1);
+  if (fn) buttons.push({ x, y, w, h, fn });
+}
+
+function drawResult() {
+  const t = G.t, k = ease(clamp(t / 0.4, 0, 1)), win = G.state === "clear";
+  ctx.fillStyle = `rgba(20,14,8,${0.72 * k})`; ctx.fillRect(0, 0, W, H);
+  ctx.globalAlpha = k;
+  const pw = Math.min(W - 32, 360), px = (W - pw) / 2, py = H * 0.2, ph = 300;
+  fillRR(px, py, pw, ph, 14, "#f3e6cc");
+  ctx.strokeStyle = "#2a1e14"; ctx.lineWidth = 3; rr(px + 6, py + 6, pw - 12, ph - 12, 10); ctx.stroke();
+  ctx.fillStyle = win ? "#b03a2e" : "#2a1e14"; ctx.font = `900 34px ${SERIF}`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillText(win ? "あっぱれ！" : "時間切れ…", W / 2, py + 50);
+  ctx.fillStyle = "#4a3626"; ctx.font = `700 15px ${FONT}`;
+  ctx.fillText(win ? `残り ${Math.ceil(G.timeLeft)}秒で全員見つけた` : `見つけた忍者 ${G.found} / ${G.st.ninjas}`, W / 2, py + 92);
+  if (win) {
+    for (let i = 0; i < 3; i++) {
+      const on = i < G.stars, pop = clamp((t - 0.4 - i * 0.18) / 0.25, 0, 1);
+      ctx.save(); ctx.translate(W / 2 + (i - 1) * 54, py + 140); ctx.scale(on ? ease(pop) : 1, on ? ease(pop) : 1);
+      ctx.fillStyle = on ? "#d6a93a" : "rgba(74,54,38,.25)"; ctx.beginPath();
+      for (let j = 0; j < 10; j++) { const a = -Math.PI / 2 + j * Math.PI / 5, rr2 = j % 2 ? 9 : 21; ctx.lineTo(Math.cos(a) * rr2, Math.sin(a) * rr2); }
+      ctx.fill(); ctx.restore();
+    }
+  }
+  ctx.globalAlpha = 1;
+  if (t > 0.6) {
+    const bw = pw - 48, bx = px + 24;
+    const last = G.idx === STAGES.length - 1;
+    if (win && !last) button(bx, py + 184, bw, 46, "次の場所へ", () => startStage(G.idx + 1), { size: 17, serif: true });
+    else if (win) button(bx, py + 184, bw, 46, "場所を選ぶ", () => { scene = "select"; }, { size: 17, serif: true });
+    else button(bx, py + 184, bw, 46, "もう一度", () => startStage(G.idx), { size: 17, serif: true });
+    button(bx, py + 240, bw, 40, win ? "もう一度" : "場所を選ぶ", win ? () => startStage(G.idx) : () => { scene = "select"; }, { size: 14, bg: "#4a3626", fg: "#f3e6cc" });
+  }
+}
+
+function drawTitle() {
+  // 背景：和室のひとこま（忍者がちょっとのぞく）
+  if (!G || G.title !== true) { startStage(0); G.title = true; scene = "title"; G.objs.forEach(o => { o.ninja = false; }); const f = G.objs[0]; f.ninja = true; f.tell = "seam"; const b = G.objs.find(o => o.type === "byobu"); b.ninja = true; b.tell = "scarf"; b.side = 1; G.camX = 0; }
+  G.timeLeft = 99;
+  drawBackdrop("washitsu", G.st.W);
+  ctx.save(); ctx.translate(0, 0);
+  for (const o of G.objs) drawObj(o);
+  ctx.restore();
+  ctx.fillStyle = "rgba(42,30,20,.55)"; ctx.fillRect(0, 0, W, H);
+  // 題字
+  const fs = Math.min(W * 0.17, 84);
+  ctx.save(); ctx.translate(W / 2, H * 0.3);
+  fillRR(-fs * 1.55, -fs * 1.25, fs * 3.1, fs * 2.5, 10, "#f3e6cc");
+  ctx.strokeStyle = "#2a1e14"; ctx.lineWidth = 3; rr(-fs * 1.55 + 7, -fs * 1.25 + 7, fs * 3.1 - 14, fs * 2.5 - 14, 6); ctx.stroke();
+  ctx.fillStyle = "#1b1b1b"; ctx.font = `900 ${fs}px ${SERIF}`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillText("忍者", 0, -fs * 0.48);
+  ctx.font = `900 ${fs * 0.5}px ${SERIF}`; ctx.fillText("かくれんぼ", 0, fs * 0.45);
+  ctx.fillStyle = "#b03a2e"; ctx.fillRect(fs * 1.05, fs * 0.72, fs * 0.32, fs * 0.32);
+  ctx.restore();
+  drawNinja(W * 0.82, HUD_T + FLOOR * u, u * 0.85, "stand", "#c0392b");
+  const a = 0.55 + 0.45 * Math.sin(time * 4);
+  ctx.globalAlpha = a; ctx.fillStyle = "#f3e6cc"; ctx.font = `900 ${Math.min(W * 0.055, 21)}px ${SERIF}`; ctx.textAlign = "center"; ctx.fillText("タップではじめる", W / 2, H * 0.72); ctx.globalAlpha = 1;
+  ctx.fillStyle = "rgba(243,230,204,.85)"; ctx.font = `700 13px ${FONT}`; ctx.fillText("左右にスライドして、隠れた忍者をタップ", W / 2, H * 0.78);
+  button(12, 12, 92, 36, "← 一覧", () => { location.href = "../../"; }, { size: 14, bg: "#f3e6cc" });
+}
+
+function drawSelect() {
+  ctx.fillStyle = "#2a1e14"; ctx.fillRect(0, 0, W, H);
+  // 畳の目
+  ctx.strokeStyle = "rgba(243,230,204,.04)"; ctx.lineWidth = 1; for (let y = 0; y < H; y += 6) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+  button(12, 12, 92, 36, "← 一覧", () => { location.href = "../../"; }, { size: 14, bg: "#f3e6cc" });
+  button(W - 104, 12, 92, 36, save.sound ? "音 あり" : "音 なし", () => { save.sound = !save.sound; writeSave(); }, { size: 14, bg: save.sound ? "#d6a93a" : "#5a4a3a", fg: save.sound ? "#2a1e14" : "#c9b89e" });
+  ctx.fillStyle = "#f3e6cc"; ctx.font = `900 28px ${SERIF}`; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText("どこを探す？", W / 2, 86);
+  const cw = Math.min(W - 32, 440), x0 = (W - cw) / 2, top = 124, gap = 10;
+  const ch = clamp((H - top - 24 - gap * 4) / 5, 62, 90);
+  STAGES.forEach((st, i) => {
+    const y = top + i * (ch + gap), open = i <= save.cleared, next = i === save.cleared;
+    fillRR(x0, y, cw, ch, 10, open ? "#f3e6cc" : "rgba(243,230,204,.08)");
+    if (next) { ctx.strokeStyle = "#d6a93a"; ctx.lineWidth = 3; rr(x0, y, cw, ch, 10); ctx.stroke(); }
+    ctx.textAlign = "left"; ctx.textBaseline = "middle";
+    ctx.fillStyle = open ? "#b03a2e" : "rgba(243,230,204,.3)"; ctx.font = `900 ${Math.round(ch * 0.42)}px ${SERIF}`;
+    ctx.fillText(["一", "二", "三", "四", "五"][i], x0 + 16, y + ch / 2);
+    ctx.fillStyle = open ? "#2a1e14" : "rgba(243,230,204,.35)"; ctx.font = `900 18px ${SERIF}`;
+    ctx.fillText(open ? st.name : "？？？", x0 + 22 + ch * 0.45, y + ch / 2 - 9);
+    ctx.font = `700 12px ${FONT}`; ctx.fillStyle = open ? "#6a5440" : "rgba(243,230,204,.3)";
+    ctx.fillText(open ? `忍者 ${st.ninjas}人・${st.time}秒` : "前の場所をクリアすると開く", x0 + 22 + ch * 0.45, y + ch / 2 + 12);
+    if (open) {
+      for (let s = 0; s < 3; s++) {
+        ctx.save(); ctx.translate(x0 + cw - 70 + s * 22, y + ch / 2); ctx.fillStyle = s < (save.best[i] || 0) ? "#d6a93a" : "rgba(74,54,38,.25)"; ctx.beginPath();
+        for (let j = 0; j < 10; j++) { const a = -Math.PI / 2 + j * Math.PI / 5, r2 = j % 2 ? 3.5 : 8.5; ctx.lineTo(Math.cos(a) * r2, Math.sin(a) * r2); } ctx.fill(); ctx.restore();
+      }
+      buttons.push({ x: x0, y, w: cw, h: ch, fn: () => startStage(i) });
+    }
+  });
+}
+
+// ---------- ループ ----------
+let last = performance.now();
+function loop(now) {
+  const dt = Math.min(0.033, (now - last) / 1000); last = now;
+  update(dt); draw();
+  requestAnimationFrame(loop);
+}
+resize();
+requestAnimationFrame(loop);
+// 確認用：#stage=3 でその場所から
+(function () { const m = location.hash.match(/stage=(\d+)/); if (m) startStage(clamp(parseInt(m[1], 10) - 1, 0, 4)); })();
+</script>
+</body>
+</html>
