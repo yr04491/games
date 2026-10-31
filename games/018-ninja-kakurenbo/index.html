@@ -23,7 +23,10 @@
 //  ・怪しい物をタップ：忍者がいれば「ドロン」と飛び出す。外れは残り時間 -3秒
 //  ・手がかり：ふすまの下のつま先、屏風からはみ出たマフラー、壺のふちの頭巾、茂みの目…
 //  ・制限時間内に全員見つければクリア。ヒントは -10秒
-//  ・全5面（和室・台所・庭・竹林・天守）。忍者の隠れ場所は毎回変わる
+//  ・全30問（10の舞台×3問）。後の問ほど忍者が増え、手がかりが小さくなる
+//  ・第7問から「ひっかけ」（手ぬぐい・草履・猫・風呂敷）、第13問から隠れ直す忍者
+//  ・温泉は湯けむり、夜の屋敷は明かりの近くしか見えない
+//  ・物の並びは問ごとに固定、忍者の隠れ場所は毎回変わる
 //  ・画像ファイルなし：すべてコードで描画
 // ============================================================
 const cv = document.getElementById("c");
@@ -47,9 +50,13 @@ const ease = t => 1 - Math.pow(1 - t, 3);
 const FLOOR = 80; // 床の高さ（上から80単位）
 
 // ---------- 保存 ----------
-const SAVE_KEY = "ninja-kakurenbo-v1";
-let save = { best: [0, 0, 0, 0, 0], cleared: 0, sound: true };
-try { const s = JSON.parse(localStorage.getItem(SAVE_KEY)); if (s) save = Object.assign(save, s); } catch (e) {}
+const SAVE_KEY = "ninja-kakurenbo-v2"; // 30問になったので新しい保存（音の設定だけ前から引き継ぐ）
+let save = { best: [], cleared: 0, sound: true };
+try {
+  const s = JSON.parse(localStorage.getItem(SAVE_KEY));
+  if (s) save = Object.assign(save, s);
+  else { const o = JSON.parse(localStorage.getItem("ninja-kakurenbo-v1")); if (o && typeof o.sound === "boolean") save.sound = o.sound; }
+} catch (e) {}
 function writeSave() { try { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch (e) {} }
 function medal(n) { if (n > 0 && window.Medal) Medal.add(n); }
 
@@ -81,22 +88,30 @@ const SFX = {
   fail() { tone(392, 0.25, "triangle", 0.07, null, 0); tone(330, 0.25, "triangle", 0.07, null, 0.22); tone(262, 0.5, "triangle", 0.07, null, 0.44); },
   tick() { tone(1500, 0.04, "square", 0.03); },
   hint() { tone(1046, 0.12, "sine", 0.06); tone(1568, 0.2, "sine", 0.06, null, 0.1); },
+  shu() { puff(0.25, 0.15, 4000); },
 };
 
 // ---------- 舞台 ----------
-//  物：[種類, x（中心・単位）]。忍者は「隠れられる物」から毎回ランダムに選ぶ
-const STAGES = [
-  { name: "和室", theme: "washitsu", W: 212, ninjas: 3, time: 60, tell: 1.0,
-    objs: [["fusuma", 16], ["kakejiku", 42], ["tsubo", 60], ["byobu", 84], ["andon", 104], ["tansu", 124], ["shoji", 150], ["tsubo", 172], ["byobu", 194]] },
-  { name: "台所", theme: "daidokoro", W: 234, ninjas: 4, time: 65, tell: 0.92,
-    objs: [["noren", 16], ["kamado", 42], ["taru", 64], ["tawara", 88], ["tsubo", 110], ["taru", 130], ["tansu", 152], ["noren", 178], ["tawara", 202], ["taru", 222]] },
-  { name: "庭", theme: "niwa", W: 252, ninjas: 5, time: 70, tell: 0.85,
-    objs: [["matsu", 18], ["toro", 42], ["bush", 60], ["rock", 80], ["ido", 102], ["bush", 124], ["matsu", 148], ["toro", 170], ["rock", 190], ["bush", 210], ["matsu", 234]] },
-  { name: "竹林", theme: "chikurin", W: 262, ninjas: 6, time: 75, tell: 0.78,
-    objs: [["mino", 14], ["bush", 32], ["rock", 52], ["mino", 72], ["bush", 92], ["rock", 112], ["mino", 132], ["bush", 152], ["toro", 172], ["mino", 192], ["rock", 212], ["bush", 230], ["mino", 248]] },
-  { name: "天守", theme: "tenshu", W: 284, ninjas: 7, time: 80, tell: 0.7,
-    objs: [["yoroi", 14], ["byobu", 38], ["taru", 62], ["hako", 82], ["yoroi", 102], ["tsubo", 122], ["tansu", 142], ["byobu", 166], ["hako", 188], ["yoroi", 208], ["taru", 228], ["shoji", 250], ["tsubo", 272]] },
-];
+//  10の舞台×3問。物の並びは問ごとに決まった乱数で作る（毎回同じ並び）
+//  pool：隠れられる物、extra：隠れられない飾り（あんどんは夜の屋敷の明かりになる）
+const THEMES = {
+  washitsu: { name: "和室", pool: ["fusuma", "kakejiku", "tsubo", "byobu", "tansu", "shoji"], extra: ["andon"], every: 8 },
+  daidokoro: { name: "台所", pool: ["noren", "taru", "tawara", "tsubo", "tansu"], extra: ["kamado"], every: 8 },
+  niwa: { name: "庭", pool: ["matsu", "toro", "bush", "rock", "ido"], extra: [] },
+  kura: { name: "蔵", pool: ["taru", "tawara", "hako", "tsubo", "tansu", "kago"], extra: [] },
+  chikurin: { name: "竹林", pool: ["mino", "bush", "rock", "toro", "kago"], extra: [] },
+  machi: { name: "城下町", pool: ["noren", "taru", "tawara", "kago", "hako", "oke"], extra: [] },
+  tera: { name: "お寺", pool: ["byobu", "tsubo", "taiko", "toro", "kakejiku", "fusuma"], extra: ["andon"], every: 8 },
+  onsen: { name: "温泉", pool: ["rock", "bush", "toro", "oke", "taru", "matsu"], extra: [] },
+  tenshu: { name: "天守", pool: ["yoroi", "byobu", "taru", "hako", "tsubo", "tansu", "shoji"], extra: [] },
+  yoru: { name: "夜の屋敷", pool: ["fusuma", "shoji", "byobu", "tsubo", "tansu", "kakejiku", "yoroi"], extra: ["andon"], every: 5 },
+};
+const THEME_ORDER = ["washitsu", "daidokoro", "niwa", "kura", "chikurin", "machi", "tera", "onsen", "tenshu", "yoru"];
+const PER = 3, TOTAL = THEME_ORDER.length * PER;
+const STAGES = [];
+function seeded(seed) { return function () { seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+const pick = a => a[Math.floor(Math.random() * a.length)];
+const FAKES = ["tenugui", "zori", "neko", "furoshiki"];
 
 // ---------- 描画の道具（単位座標：物の足もとの中心が原点、上がマイナス） ----------
 function rr(x, y, w, h, r) { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); }
@@ -237,7 +252,56 @@ const TYPES = {
     fillRR(-9, -14, 18, 14, 0.5, "#5a3a22"); fillRR(-9.6, -15, 19.2, 2.4, 0.5, "#6e4a2c");
     line(-9, -7, 9, -7, "#2a1c12", 0.5); ell(0, -10, 1.3, 1, "#c8a040");
   } },
+  taiko: { w: 18, h: 24, hide: true, tells: ["knot", "toes"], draw() {
+    // 台にのった太鼓
+    line(-7, 0, -4, -10, "#3a2414", 1.2); line(7, 0, 4, -10, "#3a2414", 1.2); line(-6, -3, 6, -3, "#3a2414", 0.8);
+    ctx.fillStyle = "#8a2a1e"; ctx.beginPath(); ctx.moveTo(-7.4, -23); ctx.quadraticCurveTo(0, -25.5, 7.4, -23); ctx.lineTo(7.4, -10); ctx.quadraticCurveTo(0, -7.5, -7.4, -10); ctx.closePath(); ctx.fill();
+    ell(-7.4, -16.5, 1.5, 6.6, "#e8dcc0"); ell(7.4, -16.5, 1.5, 6.6, "#d8ccb0");
+    ctx.fillStyle = "#d6b25a"; for (let y = -21.5; y <= -11.5; y += 2.5) { ctx.fillRect(-6.3, y, 0.7, 0.7); ctx.fillRect(5.6, y, 0.7, 0.7); }
+    ctx.strokeStyle = "rgba(255,240,200,.5)"; ctx.lineWidth = 0.4; ctx.beginPath(); ctx.arc(0, -16.5, 2.4, 0, 7); ctx.stroke();
+  } },
+  kago: { w: 16, h: 18, hide: true, tells: ["eyes", "toes"], draw() {
+    // 竹かご（すき間から目がのぞく）
+    ctx.fillStyle = "#c9a560"; ctx.beginPath(); ctx.moveTo(-8, -18); ctx.lineTo(8, -18); ctx.lineTo(6, 0); ctx.lineTo(-6, 0); ctx.closePath(); ctx.fill();
+    ctx.save(); ctx.clip();
+    for (let k = -14; k <= 14; k += 2.2) { line(k, -18, k + 8, 0, "rgba(120,86,40,.6)", 0.35); line(k, -18, k - 8, 0, "rgba(120,86,40,.6)", 0.35); }
+    ctx.restore();
+    ell(0, -18, 8.2, 1.2, "#a8843e"); ell(0, -18, 7, 0.7, "#3a2a18");
+  } },
+  oke: { w: 14, h: 16, hide: true, tells: ["knot", "hand"], draw() {
+    // 重ねた手おけ
+    const oke = (y, w, h) => { fillRR(-w / 2, y - h, w, h, 0.6, "#c0915a"); for (let x = -w / 2 + 1.6; x < w / 2; x += 1.8) line(x, y - h, x, y, "rgba(110,70,30,.35)", 0.25); line(-w / 2, y - h * 0.3, w / 2, y - h * 0.3, "#5e5e66", 0.6); line(-w / 2, y - h * 0.78, w / 2, y - h * 0.78, "#5e5e66", 0.6); };
+    oke(0, 14, 9); oke(-9, 12, 7);
+  } },
 };
+
+// ---------- 30問の組み立て ----------
+for (let n = 0; n < TOTAL; n++) {
+  const theme = THEME_ORDER[Math.floor(n / PER)], th = THEMES[theme], r = seeded(n * 7919 + 101);
+  const ninjas = 2 + Math.round(n * 7 / (TOTAL - 1));                       // 2人 → 9人
+  const fakes = n < 6 ? 0 : Math.min(4, 1 + Math.floor((n - 6) / 6));        // 第7問から 1 → 4
+  const movers = n < 12 ? 0 : n < 20 ? 1 : n < 26 ? 2 : 3;                    // 第13問から 1 → 3
+  const hideN = ninjas + fakes + movers + 3 + Math.floor(n / 6);              // 空っぽの物も増える
+  const types = []; let prev = null;
+  for (let k = 0; k < hideN; k++) { let t; do { t = th.pool[Math.floor(r() * th.pool.length)]; } while (t === prev); types.push(t); prev = t; }
+  for (const t of th.extra) { const cnt = 1 + Math.floor(hideN / (th.every || 8)); for (let c = 0; c < cnt; c++) types.splice(1 + Math.floor(r() * (types.length - 1)), 0, t); }
+  const objs = []; let x = 8;
+  for (const t of types) { const w = TYPES[t].w; x += w / 2; objs.push([t, Math.round(x)]); x += w / 2 + 4 + r() * 6; }
+  const W = Math.round(x + 4);
+  let tip = "";
+  if (n === 0) tip = "物からはみ出た手がかりを探して、その物をタップ";
+  if (n === 6) tip = "ひっかけ登場！ 手ぬぐい・草履・猫・風呂敷は忍者じゃない";
+  if (n === 12) tip = "逃げ足の速い忍者が登場。しばらくすると別の物に隠れ直す";
+  if (theme === "onsen" && n % PER === 0) tip = "湯けむりで見えにくい。けむりが流れるのを待とう";
+  if (theme === "yoru" && n % PER === 0) tip = "真っ暗！ 画面の真ん中と、あんどんの近くだけ見える";
+  STAGES.push({
+    n, theme, name: th.name, W, ninjas, fakes, movers, objs, tip,
+    moveEvery: Math.max(5.5, 10 - (n - 12) * 0.25),
+    time: Math.round(10 + ninjas * (12 - n * 0.12) + W * 0.07),
+    tell: 1.05 - n * 0.017,          // 手がかりの大きさ 1.05 → 0.56
+    slow: 1 + n * 0.03,              // 手がかりがピクッと動く間隔もだんだん長く
+  });
+}
 
 // 手がかり（物の座標で描く）。s＝大きさ、tw＝ピクッと動く量（0〜1）
 function drawTell(o, kind, s, tw, extra) {
@@ -272,6 +336,7 @@ function drawTell(o, kind, s, tw, extra) {
     if (o.type === "bush") { x = o.side * 3; y = -6.5; }
     if (o.type === "matsu") { x = o.side * 4; y = -44; }
     if (o.type === "yoroi") { x = 0; y = -24.3; }
+    if (o.type === "kago") { x = o.side * 3; y = -10; }
     const blink = tw > 0.7 ? 0.15 : 1;
     if (o.type === "tsubo") { ctx.fillStyle = NAVY; ctx.beginPath(); ctx.ellipse(0, y, 2.4 * s, 1.2 * s, 0, Math.PI, 0); ctx.fill(); y -= 0.5; }
     for (const dx of [-0.9, 0.9]) { ell(x + dx * s, y, 0.55 * s, 0.45 * s * blink, "#fffbe8"); ell(x + dx * s, y, 0.24 * s, 0.24 * s * blink, "#111"); }
@@ -301,6 +366,35 @@ function drawTell(o, kind, s, tw, extra) {
   } else if (kind === "hem") { // 隠れ蓑のすそから足先、布のはしがめくれる
     ctx.fillStyle = "#24361f"; ctx.beginPath(); ctx.moveTo(6.5, -10); ctx.lineTo(6.5 + 1.4 * s + tw * 0.6, -6); ctx.lineTo(6.5, -4); ctx.fill();
     for (const dx of [-1.2, 1.2]) ell(o.side * 2 + dx * s, -0.5, 1 * s, 0.7 * s, NAVY);
+  }
+  ctx.restore();
+}
+
+// ひっかけ（忍者っぽいけど違う物）。手ぬぐい＝白と青のしま、草履＝茶色、猫＝黄色い目とオレンジの耳、風呂敷＝緑の包み
+function drawFake(o, kind, s, tw) {
+  const T = TYPES[o.type], top = -T.h;
+  ctx.save();
+  if (kind === "tenugui") { // 横から下がった手ぬぐい（ひらひらしない）
+    const x0 = o.side * (T.w / 2 - 0.6), y0 = o.type === "matsu" ? -26 : -T.h * 0.72;
+    ctx.translate(x0, y0); ctx.rotate(o.side * 0.06 + Math.sin(time * 1.5 + o.x) * 0.03);
+    const w = 3.2 * s, h = 8 * s, left = o.side > 0 ? 0 : -w;
+    ctx.fillStyle = "#f4f2ea"; ctx.fillRect(left, 0, w, h);
+    ctx.fillStyle = "#3a6ea8"; for (let k = 1; k < 4; k++) ctx.fillRect(left, h * k / 4 - 0.35 * s, w, 0.7 * s);
+  } else if (kind === "zori") { // 横に脱いである草履
+    const x = o.side * (T.w / 2 + 2.6);
+    for (const dx of [-1.2, 1.2]) { ell(x + dx * s, -0.5, 1.1 * s, 0.6 * s, "#b08850"); line(x + dx * s - 0.5 * s, -0.75, x + dx * s + 0.4 * s, -0.95, "#c0392b", 0.35 * s); }
+  } else if (kind === "neko") { // 上から猫がのぞく
+    const x = o.side * 2, c = "#d08a3c", blink = tw > 0.7 ? 0.15 : 1;
+    ctx.fillStyle = c; ctx.beginPath(); ctx.ellipse(x, top + 0.2, 2.6 * s, 1.7 * s, 0, Math.PI, 0); ctx.fill();
+    for (const d of [-1, 1]) { ctx.beginPath(); ctx.moveTo(x + d * 0.6 * s, top - 1.4 * s); ctx.lineTo(x + d * 2.2 * s, top - 2.9 * s); ctx.lineTo(x + d * 2.4 * s, top - 0.6 * s); ctx.fill(); }
+    ctx.fillStyle = "#9a5a22"; ctx.fillRect(x - 0.15 * s, top - 1.6 * s, 0.3 * s, 0.7 * s);
+    for (const d of [-0.9, 0.9]) { ell(x + d * s, top - 0.7 * s, 0.5 * s, 0.45 * s * blink, "#f2d33a"); ctx.fillStyle = "#111"; ctx.fillRect(x + d * s - 0.08 * s, top - 1.1 * s * blink, 0.16 * s, 0.8 * s * blink); }
+  } else if (kind === "furoshiki") { // 上にのった風呂敷包み
+    ell(0, top - 1.4 * s, 3 * s, 1.8 * s, "#2e7d4f");
+    ctx.strokeStyle = "rgba(255,255,255,.75)"; ctx.lineWidth = 0.3 * s;
+    for (const dy of [-0.6, -2.0]) { ctx.beginPath(); for (let x = -2.4; x <= 2.4; x += 0.3) ctx.lineTo(x * s, top + (dy + Math.sin(x * 2.6) * 0.3) * s); ctx.stroke(); }
+    ctx.fillStyle = "#2e7d4f";
+    for (const d of [-1, 1]) { ctx.beginPath(); ctx.moveTo(d * 0.3 * s, top - 3 * s); ctx.lineTo(d * 1.6 * s, top - 4.2 * s); ctx.lineTo(d * 1.0 * s, top - 2.8 * s); ctx.fill(); }
   }
   ctx.restore();
 }
@@ -337,18 +431,46 @@ function maxCam() { return G ? Math.max(0, G.st.W * u - W) : 0; }
 
 function startStage(i) {
   const st = STAGES[i];
-  const objs = st.objs.map(([type, x]) => ({ type, x, ninja: false, found: false, tell: null, side: Math.random() < 0.5 ? -1 : 1, ph: Math.random() * 10, twitch: 0, mark: 0 }));
-  // 隠れる物を毎回ランダムに選ぶ
+  const objs = st.objs.map(([type, x]) => ({ type, x, ninja: false, found: false, tell: null, fake: null, mover: false, side: Math.random() < 0.5 ? -1 : 1, ph: Math.random() * 10, twitch: 0, mark: 0 }));
+  // 隠れる物を毎回ランダムに選ぶ（忍者 → ひっかけ の順に割り当て）
   const cand = objs.filter(o => TYPES[o.type].hide);
   for (let k = cand.length - 1; k > 0; k--) { const j = Math.floor(Math.random() * (k + 1)); [cand[k], cand[j]] = [cand[j], cand[k]]; }
-  cand.slice(0, st.ninjas).forEach((o, k) => { o.ninja = true; o.scarf = SCARVES[k % SCARVES.length]; const ts = TYPES[o.type].tells; o.tell = ts[Math.floor(Math.random() * ts.length)]; });
+  cand.slice(0, st.ninjas).forEach((o, k) => { o.ninja = true; o.scarf = SCARVES[k % SCARVES.length]; o.tell = pick(TYPES[o.type].tells); o.mover = k < st.movers; });
+  cand.slice(st.ninjas, st.ninjas + st.fakes).forEach((o, k) => { o.fake = FAKES[(k + Math.floor(Math.random() * 4)) % FAKES.length]; });
   // 竹林の背景の竹
   const deco = [];
   if (st.theme === "chikurin") for (let x = 2; x < st.W; x += 5 + Math.random() * 4) deco.push({ type: "bamboo", x, tone: ["#5b8f40", "#6aa04a", "#77ad55"][Math.floor(Math.random() * 3)], back: true });
-  G = { idx: i, st, objs, deco, found: 0, timeLeft: st.time, camX: 0, vel: 0, state: "play", t: 0, pops: [], misses: [], hint: null, tellScale: st.tell, lastTick: 0, hintUsed: 0 };
+  // 温泉の湯けむり
+  const steam = [];
+  if (st.theme === "onsen") for (let x = 0; x < st.W; x += 16 + Math.random() * 10) steam.push({ x, y: 38 + Math.random() * 36, rx: 13 + Math.random() * 12, ry: 8 + Math.random() * 6, sp: (Math.random() < 0.5 ? -1 : 1) * (2.5 + Math.random() * 3), ph: Math.random() * 7 });
+  G = { idx: i, st, objs, deco, steam, found: 0, timeLeft: st.time, camX: 0, vel: 0, state: "intro", t: 0, introDur: st.tip ? 5 : 2.2,
+    pops: [], misses: [], shu: [], hint: null, tellScale: st.tell, lastTick: 0, hintUsed: 0, moveT: st.moveEvery, moveIdx: 0 };
   // 最初は真ん中あたりから
   G.camX = clamp(st.W * u * 0.5 - W / 2, 0, maxCam());
   scene = "play";
+}
+
+// 逃げ足の速い忍者：別の物に隠れ直す（なるべく画面の外の物へ）
+function onScreen(o) { const sx = o.x * u - G.camX; return sx > -10 * u && sx < W + 10 * u; }
+function relocate(o) {
+  let cs = G.objs.filter(c => TYPES[c.type].hide && !c.ninja && !c.found && !c.fake && c !== o);
+  const off = cs.filter(c => !onScreen(c)); if (off.length) cs = off;
+  if (!cs.length) return;
+  const c = pick(cs);
+  c.ninja = true; c.mover = true; c.scarf = o.scarf; c.tell = pick(TYPES[c.type].tells); c.side = Math.random() < 0.5 ? -1 : 1;
+  o.ninja = false; o.mover = false; o.tell = null;
+  G.shu.push({ x: o.x, h: TYPES[o.type].h, t: 0 });
+  if (G.hint && G.hint.o === o) G.hint.o = c;
+  if (onScreen(o)) SFX.shu();
+}
+
+// 選択画面へ（次に遊ぶ問が見える位置までスクロール）
+let selScroll = 0;
+function selGeom() { const top = 116, rowH = 78; return { top, rowH, max: Math.max(0, top + THEME_ORDER.length * rowH + 16 - H) }; }
+function goSelect() {
+  scene = "select";
+  const g = selGeom(), row = Math.floor(Math.min(save.cleared, TOTAL - 1) / PER);
+  selScroll = clamp(g.top + row * g.rowH - H * 0.45, 0, g.max);
 }
 
 // ---------- 入力 ----------
@@ -356,12 +478,13 @@ let drag = null;
 cv.addEventListener("pointerdown", e => {
   audio();
   try { cv.setPointerCapture(e.pointerId); } catch (err) {} // 画面の外で離しても受け取る
-  drag = { x: e.clientX, y: e.clientY, sx: e.clientX, lastX: e.clientX, lastT: performance.now(), moved: false, id: e.pointerId, cam: G ? G.camX : 0, mini: e.clientY > H - HUD_B };
+  drag = { x: e.clientX, y: e.clientY, sx: e.clientX, lastX: e.clientX, lastT: performance.now(), moved: false, id: e.pointerId, cam: G ? G.camX : 0, sel: selScroll, mini: e.clientY > H - HUD_B };
   if (G) G.vel = 0;
 });
 cv.addEventListener("pointermove", e => {
   if (!drag || e.pointerId !== drag.id) return;
   if (Math.abs(e.clientX - drag.sx) > 8 || Math.abs(e.clientY - drag.y) > 8) drag.moved = true;
+  if (scene === "select" && drag.moved) selScroll = clamp(drag.sel - (e.clientY - drag.y), 0, selGeom().max);
   if (scene === "play" && G && G.state === "play") {
     if (drag.mini) { jumpMini(e.clientX); }
     else if (drag.moved) {
@@ -380,6 +503,7 @@ cv.addEventListener("pointerup", e => {
   if (!d.moved) tap(e.clientX, e.clientY, d.mini);
 });
 cv.addEventListener("pointercancel", () => { drag = null; });
+cv.addEventListener("wheel", e => { if (scene === "select") selScroll = clamp(selScroll + e.deltaY, 0, selGeom().max); }, { passive: true });
 function jumpMini(x) {
   const mw = W - 24, k = clamp((x - 12) / mw, 0, 1);
   G.camX = clamp(k * G.st.W * u - W / 2, 0, maxCam()); G.vel = 0;
@@ -390,7 +514,8 @@ function tap(x, y, mini) {
     const b = buttons[i];
     if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) { b.fn(); return; }
   }
-  if (scene === "title") { scene = "select"; return; }
+  if (scene === "title") { goSelect(); return; }
+  if (scene === "play" && G && G.state === "intro") { G.state = "play"; G.t = 0; return; }
   if (scene !== "play" || !G || G.state !== "play") return;
   if (mini) { jumpMini(x); return; }
   if (y < HUD_T || y > H - HUD_B) return;
@@ -425,6 +550,9 @@ function hitBox(o) {
     if (o.tell === "foot") { if (o.side > 0) x1 += 3; else x0 -= 3; }
     if (o.tell === "sword") { if (o.side > 0) x1 += 3; else x0 -= 3; }
   }
+  if (o.fake === "tenugui") { if (o.side > 0) x1 += 4; else x0 -= 4; }
+  if (o.fake === "zori") { if (o.side > 0) x1 += 5; else x0 -= 5; }
+  if (o.fake === "neko" || o.fake === "furoshiki") y0 -= 4;
   return { x0, x1, y0, y1 };
 }
 
@@ -446,6 +574,7 @@ function finishStage(win) {
     const r = G.timeLeft / G.st.time;
     G.stars = r >= 0.5 ? 3 : r >= 0.25 ? 2 : 1;
     save.best[G.idx] = Math.max(save.best[G.idx] || 0, G.stars);
+    for (let k = 0; k < TOTAL; k++) save.best[k] = save.best[k] || 0;
     save.cleared = Math.max(save.cleared, G.idx + 1);
     writeSave();
     medal(5); // 共通メダル：クリアで5枚
@@ -458,16 +587,25 @@ function update(dt) {
   time += dt;
   if (scene !== "play" || !G) return;
   G.t += dt;
+  if (G.state === "intro" && G.t > G.introDur) { G.state = "play"; G.t = 0; }
   if (G.state === "play") {
     G.timeLeft -= dt;
     if (G.timeLeft <= 10 && Math.floor(G.timeLeft) !== G.lastTick) { G.lastTick = Math.floor(G.timeLeft); if (G.timeLeft > 0) SFX.tick(); }
     if (G.timeLeft <= 0) { G.timeLeft = 0; finishStage(false); }
+    // 逃げ足の速い忍者が順番に隠れ直す
+    if (G.st.movers && G.state === "play") {
+      G.moveT -= dt;
+      if (G.moveT <= 0) { G.moveT = G.st.moveEvery; const ms = G.objs.filter(o => o.ninja && o.mover && !o.found); if (ms.length) relocate(ms[G.moveIdx++ % ms.length]); }
+    }
   }
+  for (const s of G.steam) { s.x += s.sp * dt; if (s.x < -20) s.x += G.st.W + 40; if (s.x > G.st.W + 20) s.x -= G.st.W + 40; }
+  for (const p of G.shu) p.t += dt;
+  G.shu = G.shu.filter(p => p.t < 0.8);
   // スライドの慣性
   if (!drag && Math.abs(G.vel) > 5) { G.camX = clamp(G.camX + G.vel * dt, 0, maxCam()); G.vel *= Math.pow(0.002, dt); }
   // 手がかりがときどきピクッと動く
   for (const o of G.objs) {
-    const per = 2.6 + (o.ph % 2.5);
+    const per = (2.6 + (o.ph % 2.5)) * G.st.slow;
     const p = (time + o.ph) % per;
     o.twitch = p < 0.45 ? Math.sin(p / 0.45 * Math.PI) : 0;
     o.mark = Math.max(0, o.mark - dt * 0.6);
@@ -483,14 +621,16 @@ function update(dt) {
 function drawBackdrop(theme, ww) {
   const top = HUD_T, fy = top + FLOOR * u, x0 = -G.camX;
   ctx.save();
-  if (theme === "washitsu" || theme === "tenshu") {
-    const wall = theme === "washitsu" ? "#e9dcbf" : "#5b3b25", floor = theme === "washitsu" ? "#c9c07a" : "#7a5233";
+  if (theme === "washitsu" || theme === "tenshu" || theme === "yoru") {
+    const wa = theme !== "tenshu";
+    const wall = theme === "washitsu" ? "#e9dcbf" : theme === "yoru" ? "#8a7e62" : "#5b3b25", floor = theme === "washitsu" ? "#c9c07a" : theme === "yoru" ? "#8a8450" : "#7a5233";
     ctx.fillStyle = wall; ctx.fillRect(0, top, W, fy - top);
-    ctx.fillStyle = theme === "washitsu" ? "#6a4426" : "#3a2414"; ctx.fillRect(0, top, W, 6 * u); // なげし
-    for (let x = 0; x < ww; x += 54) { const sx = x0 + x * u; if (sx > -6 * u && sx < W + 6 * u) { ctx.fillStyle = theme === "washitsu" ? "#7a5030" : "#3a2414"; ctx.fillRect(sx - 1.6 * u, top, 3.2 * u, fy - top); } }
+    ctx.fillStyle = wa ? "#6a4426" : "#3a2414"; ctx.fillRect(0, top, W, 6 * u); // なげし
+    for (let x = 0; x < ww; x += 54) { const sx = x0 + x * u; if (sx > -6 * u && sx < W + 6 * u) { ctx.fillStyle = wa ? "#7a5030" : "#3a2414"; ctx.fillRect(sx - 1.6 * u, top, 3.2 * u, fy - top); } }
     if (theme === "tenshu") { for (let x = 27; x < ww; x += 54) { const sx = x0 + x * u; ctx.fillStyle = "#a9c7e0"; ctx.fillRect(sx - 6 * u, top + 14 * u, 12 * u, 14 * u); ctx.fillStyle = "#3a2414"; for (let k = -2; k <= 2; k++) ctx.fillRect(sx + k * 2.6 * u - 0.4 * u, top + 14 * u, 0.8 * u, 14 * u); } }
+    if (theme === "yoru") { for (let x = 27; x < ww; x += 108) { const sx = x0 + x * u; ctx.fillStyle = "#f3eccf"; ctx.beginPath(); ctx.arc(sx, top + 20 * u, 5 * u, 0, 7); ctx.fill(); ctx.strokeStyle = "#5a3c22"; ctx.lineWidth = 0.6 * u; ctx.beginPath(); ctx.arc(sx, top + 20 * u, 8 * u, 0, 7); ctx.stroke(); } } // 丸窓と月
     ctx.fillStyle = floor; ctx.fillRect(0, fy, W, H - HUD_B - fy);
-    if (theme === "washitsu") { // 畳のふち
+    if (wa) { // 畳のふち
       ctx.fillStyle = "#3b4a3a"; ctx.fillRect(0, fy + 1 * u, W, 0.9 * u);
       for (let x = 0; x < ww; x += 36) { const sx = x0 + x * u; ctx.fillStyle = "#3b4a3a"; ctx.fillRect(sx, fy + 1 * u, 0.9 * u, (100 - FLOOR) * u); }
       ctx.strokeStyle = "rgba(120,110,50,.25)"; ctx.lineWidth = 1; for (let y = fy + 3 * u; y < H - HUD_B; y += 1.6 * u) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
@@ -530,6 +670,44 @@ function drawBackdrop(theme, ww) {
     const g = ctx.createLinearGradient(0, top, 0, fy); g.addColorStop(0, "#cfe3b8"); g.addColorStop(1, "#9fc27c"); ctx.fillStyle = g; ctx.fillRect(0, top, W, fy - top);
     ctx.fillStyle = "#5e7a3c"; ctx.fillRect(0, fy, W, H - HUD_B - fy);
     ctx.fillStyle = "rgba(255,255,220,.18)"; for (let i = 0; i < 6; i++) { const sx = ((i * 61 + 13) % ww) * u + x0; ctx.beginPath(); ctx.moveTo(sx, top); ctx.lineTo(sx + 10 * u, top); ctx.lineTo(sx + 30 * u, fy); ctx.lineTo(sx + 16 * u, fy); ctx.fill(); }
+  } else if (theme === "kura") { // 蔵：上はしっくい、下は板壁、高い所に格子窓
+    ctx.fillStyle = "#e4ddcd"; ctx.fillRect(0, top, W, fy - top);
+    ctx.fillStyle = "#5a4030"; ctx.fillRect(0, top + 44 * u, W, fy - top - 44 * u);
+    for (let x = 0; x < ww; x += 5) { const sx = x0 + x * u; if (sx > -u && sx < W) { ctx.fillStyle = "rgba(0,0,0,.22)"; ctx.fillRect(sx, top + 44 * u, 0.25 * u, (FLOOR - 44) * u); } }
+    ctx.fillStyle = "#3a2a1c"; ctx.fillRect(0, top, W, 5 * u); ctx.fillRect(0, top + 42 * u, W, 2.6 * u);
+    for (let x = 30; x < ww; x += 70) { const sx = x0 + x * u; if (sx < -12 * u || sx > W + 12 * u) continue;
+      ctx.fillStyle = "#fff6d8"; ctx.fillRect(sx - 7 * u, top + 14 * u, 14 * u, 10 * u); ctx.fillStyle = "#3a2a1c"; for (let k = -3; k <= 3; k++) ctx.fillRect(sx + k * 2 * u - 0.4 * u, top + 14 * u, 0.8 * u, 10 * u);
+      ctx.fillStyle = "rgba(255,246,200,.12)"; ctx.beginPath(); ctx.moveTo(sx - 7 * u, top + 24 * u); ctx.lineTo(sx + 7 * u, top + 24 * u); ctx.lineTo(sx + 22 * u, fy); ctx.lineTo(sx + 4 * u, fy); ctx.fill(); }
+    ctx.fillStyle = "#6e5440"; ctx.fillRect(0, fy, W, H - HUD_B - fy);
+    ctx.strokeStyle = "rgba(30,20,10,.4)"; ctx.lineWidth = 1; for (let y = fy + 4 * u; y < H - HUD_B; y += 5 * u) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+  } else if (theme === "tera") { // お寺：朱色の柱と金の帯、板の間
+    ctx.fillStyle = "#4a2e1c"; ctx.fillRect(0, top, W, fy - top);
+    ctx.fillStyle = "#c9a040"; ctx.fillRect(0, top + 5 * u, W, 1.6 * u); ctx.fillRect(0, top + 30 * u, W, 0.8 * u);
+    ctx.fillStyle = "#2a1a10"; ctx.fillRect(0, top, W, 5 * u);
+    for (let x = 0; x < ww; x += 60) { const sx = x0 + x * u; if (sx > -6 * u && sx < W + 6 * u) { ctx.fillStyle = "#a83a26"; ctx.fillRect(sx - 2.4 * u, top, 4.8 * u, fy - top); ctx.fillStyle = "rgba(255,255,255,.12)"; ctx.fillRect(sx - 1.6 * u, top, 0.9 * u, fy - top); } }
+    for (let x = 30; x < ww; x += 120) { const sx = x0 + x * u; if (sx < -14 * u || sx > W + 14 * u) continue; ctx.strokeStyle = "rgba(201,160,64,.5)"; ctx.lineWidth = 0.6 * u; ctx.beginPath(); ctx.arc(sx, top + 18 * u, 8 * u, 0, 7); ctx.stroke(); for (let k = 0; k < 8; k++) { const a = k / 8 * Math.PI * 2; line(sx, top + 18 * u, sx + Math.cos(a) * 8 * u, top + 18 * u + Math.sin(a) * 8 * u, "rgba(201,160,64,.35)", 0.4 * u); } }
+    ctx.fillStyle = "#8a6440"; ctx.fillRect(0, fy, W, H - HUD_B - fy);
+    ctx.fillStyle = "rgba(255,230,180,.12)"; ctx.fillRect(0, fy + 2 * u, W, 2 * u);
+    ctx.strokeStyle = "rgba(40,20,10,.35)"; ctx.lineWidth = 1; for (let y = fy + 6 * u; y < H - HUD_B; y += 6 * u) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+  } else if (theme === "machi") { // 城下町：夕方の空、町家の並び、土の道
+    const g = ctx.createLinearGradient(0, top, 0, fy); g.addColorStop(0, "#f2b98a"); g.addColorStop(1, "#fbe6c8"); ctx.fillStyle = g; ctx.fillRect(0, top, W, fy - top);
+    for (let x = 0; x < ww; x += 48) { const sx = x0 + x * u; if (sx < -50 * u || sx > W + 4 * u) continue;
+      ctx.fillStyle = "#d8c8a8"; ctx.fillRect(sx + 1 * u, fy - 44 * u, 46 * u, 44 * u);
+      ctx.fillStyle = "#6b4a2c"; ctx.fillRect(sx + 1 * u, fy - 22 * u, 46 * u, 22 * u);
+      for (let k = 3; k < 46; k += 2.4) ctx.fillRect(sx + k * u, fy - 40 * u, 0.5 * u, 14 * u);
+      ctx.fillStyle = "#3a3e48"; ctx.beginPath(); ctx.moveTo(sx - 2 * u, fy - 43 * u); ctx.lineTo(sx + 50 * u, fy - 43 * u); ctx.lineTo(sx + 44 * u, fy - 51 * u); ctx.lineTo(sx + 4 * u, fy - 51 * u); ctx.fill();
+      ctx.fillStyle = "#3a3e48"; ctx.fillRect(sx - 1 * u, fy - 25 * u, 50 * u, 2.2 * u); }
+    ctx.fillStyle = "#bfa682"; ctx.fillRect(0, fy, W, H - HUD_B - fy);
+    ctx.fillStyle = "rgba(90,70,40,.25)"; for (let i = 0; i < 80; i++) { const sx = ((i * 131) % ww) * u + x0; ctx.beginPath(); ctx.arc(sx, fy + ((i * 29) % 16 + 2) * u, 0.4 * u, 0, 7); ctx.fill(); }
+  } else if (theme === "onsen") { // 温泉：夜空と月、竹垣、石の床と湯船
+    const g = ctx.createLinearGradient(0, top, 0, fy); g.addColorStop(0, "#2a2f55"); g.addColorStop(1, "#6a5f8a"); ctx.fillStyle = g; ctx.fillRect(0, top, W, fy - top);
+    const mx = W * 0.75 - G.camX * 0.1; ctx.fillStyle = "#fff6d0"; ctx.beginPath(); ctx.arc(mx, top + 16 * u, 6 * u, 0, 7); ctx.fill();
+    ctx.fillStyle = "#a8834a"; ctx.fillRect(0, fy - 32 * u, W, 32 * u);
+    for (let x = 0; x < ww; x += 3) { const sx = x0 + x * u; if (sx > -u && sx < W) { ctx.fillStyle = "rgba(60,40,10,.35)"; ctx.fillRect(sx, fy - 32 * u, 0.3 * u, 32 * u); } }
+    ctx.fillStyle = "#5a4020"; ctx.fillRect(0, fy - 26 * u, W, 0.9 * u); ctx.fillRect(0, fy - 10 * u, W, 0.9 * u);
+    ctx.fillStyle = "#8e8a84"; ctx.fillRect(0, fy, W, H - HUD_B - fy);
+    ctx.fillStyle = "#6fa8b8"; ctx.fillRect(0, fy + 6 * u, W, Math.max(0, H - HUD_B - fy - 6 * u));
+    ctx.strokeStyle = "rgba(255,255,255,.35)"; ctx.lineWidth = 1; for (let y = fy + 9 * u; y < H - HUD_B; y += 3 * u) { ctx.beginPath(); for (let x = 0; x <= W; x += 10) ctx.lineTo(x, y + Math.sin((x + G.camX) * 0.04 + time * 2 + y) * 0.5 * u); ctx.stroke(); }
   }
   ctx.restore();
 }
@@ -558,7 +736,10 @@ function drawObj(o) {
   // 手前に描く手がかり（物の上に出るもの）と、奥に描くもの
   const behind = ["scarf", "knot", "sword", "foot"].includes(o.tell);
   if (showTell && behind) drawTell(o, o.tell, s, tw);
+  const fk = o.fake && !o.found ? o.fake : null;
+  if (fk === "tenugui") drawFake(o, fk, s, tw);
   T.draw(o);
+  if (fk && fk !== "tenugui") drawFake(o, fk, s, tw);
   const inside = ["shadow", "legs", "eyes", "lid", "hem"].includes(o.tell) && ["shoji", "noren", "bush", "yoroi", "taru", "mino"].includes(o.type);
   if (showTell && !behind && !inside) drawTell(o, o.tell, s, tw);
   if (showTell && o.tell === "eyes" && (o.type === "tsubo" || o.type === "matsu")) {} // 上で描いた
@@ -579,6 +760,24 @@ function drawPlay() {
     ctx.save(); ctx.translate(sx, HUD_T + (FLOOR + 2) * u); ctx.scale(u, u); ctx.globalAlpha = 0.85; TYPES.bamboo.draw(d); ctx.restore();
   }
   for (const o of G.objs) drawObj(o);
+  // 隠れ直した跡の小さな煙
+  for (const p of G.shu) {
+    const sx = p.x * u - G.camX, by = HUD_T + (FLOOR - p.h * 0.5) * u;
+    ctx.globalAlpha = clamp(1 - p.t / 0.8, 0, 1) * 0.8;
+    for (let i = 0; i < 5; i++) { const a = i / 5 * Math.PI * 2; ell(sx + Math.cos(a) * (2 + p.t * 8) * u, by + Math.sin(a) * (1.5 + p.t * 5) * u, (2 + p.t * 3) * u, (1.6 + p.t * 2.4) * u, "#f4f1ea"); }
+    ctx.fillStyle = "#1b1b1b"; ctx.font = `900 ${Math.round(4 * u)}px ${SERIF}`; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText("シュッ", sx, by - (6 + p.t * 6) * u);
+    ctx.globalAlpha = 1;
+  }
+  // 湯けむり
+  for (const s of G.steam) {
+    const sx = s.x * u - G.camX, sy = HUD_T + s.y * u, rx = s.rx * u, ry = s.ry * u;
+    if (sx < -rx * 1.3 || sx > W + rx * 1.3) continue;
+    const g = ctx.createRadialGradient(sx, sy, 0, sx, sy, rx);
+    const a = 0.62 + 0.15 * Math.sin(time * 0.7 + s.ph);
+    g.addColorStop(0, `rgba(245,247,250,${a})`); g.addColorStop(0.6, `rgba(245,247,250,${a * 0.75})`); g.addColorStop(1, "rgba(245,247,250,0)");
+    ctx.save(); ctx.translate(sx, sy); ctx.scale(1, ry / rx); ctx.translate(-sx, -sy); ctx.fillStyle = g; ctx.beginPath(); ctx.arc(sx, sy, rx, 0, 7); ctx.fill(); ctx.restore();
+  }
+  if (st.theme === "yoru") drawDark();
   // 飛び出す忍者と煙
   for (const p of G.pops) {
     const T = TYPES[p.o.type], sx = p.o.x * u - G.camX, by = HUD_T + FLOOR * u;
@@ -620,7 +819,54 @@ function drawPlay() {
   }
   ctx.restore();
   drawHud();
+  if (G.state === "intro") drawIntro();
   if (G.state === "clear" || G.state === "fail") drawResult();
+}
+
+// 夜の屋敷：真っ暗。画面の真ん中とあんどんのまわりだけ明るい
+let dk = null;
+function drawDark() {
+  if (!dk) dk = document.createElement("canvas");
+  const cw = Math.round(W * DPR), ch = Math.round(SH * DPR);
+  if (dk.width !== cw || dk.height !== ch) { dk.width = cw; dk.height = ch; }
+  const d = dk.getContext("2d");
+  d.setTransform(DPR, 0, 0, DPR, 0, 0);
+  d.globalCompositeOperation = "source-over"; d.clearRect(0, 0, W, SH);
+  d.fillStyle = "rgba(6,6,20,.95)"; d.fillRect(0, 0, W, SH);
+  d.globalCompositeOperation = "destination-out";
+  const hole = (x, y, r) => { const g = d.createRadialGradient(x, y, 0, x, y, r); g.addColorStop(0, "rgba(0,0,0,1)"); g.addColorStop(0.5, "rgba(0,0,0,.88)"); g.addColorStop(1, "rgba(0,0,0,0)"); d.fillStyle = g; d.beginPath(); d.arc(x, y, r, 0, 7); d.fill(); };
+  hole(W / 2, SH * 0.62, 36 * u);
+  for (const o of G.objs) if (o.type === "andon") { const sx = o.x * u - G.camX; if (sx > -40 * u && sx < W + 40 * u) hole(sx, (FLOOR - 12) * u, 27 * u * (0.96 + 0.04 * Math.sin(time * 3 + o.x))); }
+  ctx.drawImage(dk, 0, HUD_T, W, SH);
+}
+
+// 問題の始まり：何問目か・忍者の数・新しい決まりを見せる（時間は止まっている）
+function drawIntro() {
+  const st = G.st, k = ease(clamp(G.t / 0.3, 0, 1));
+  ctx.fillStyle = `rgba(20,14,8,${0.55 * k})`; ctx.fillRect(0, 0, W, H);
+  ctx.globalAlpha = k;
+  const pw = Math.min(W - 32, 360), px = (W - pw) / 2, ph = st.tip ? 236 : 170, py = H * 0.5 - ph / 2;
+  fillRR(px, py, pw, ph, 14, "#f3e6cc");
+  ctx.strokeStyle = "#2a1e14"; ctx.lineWidth = 3; rr(px + 6, py + 6, pw - 12, ph - 12, 10); ctx.stroke();
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillStyle = "#b03a2e"; ctx.font = `900 30px ${SERIF}`; ctx.fillText(`第${st.n + 1}問`, W / 2, py + 44);
+  ctx.fillStyle = "#2a1e14"; ctx.font = `900 20px ${SERIF}`; ctx.fillText(st.name, W / 2, py + 80);
+  ctx.fillStyle = "#6a5440"; ctx.font = `700 14px ${FONT}`; ctx.fillText(`忍者 ${st.ninjas}人・${st.time}秒`, W / 2, py + 108);
+  if (st.tip) {
+    fillRR(px + 18, py + 126, pw - 36, 58, 8, "#2a1e14");
+    ctx.fillStyle = "#f3e6cc"; ctx.font = `800 13px ${FONT}`;
+    wrapText(st.tip, W / 2, py + 155, pw - 56, 19);
+  }
+  const a = 0.55 + 0.45 * Math.sin(time * 5);
+  ctx.globalAlpha = k * a; ctx.fillStyle = "#4a3626"; ctx.font = `800 13px ${FONT}`; ctx.fillText("タップで開始", W / 2, py + ph - 24);
+  ctx.globalAlpha = 1;
+}
+// 長い文を幅に合わせて折り返す（日本語なので1文字ずつ）
+function wrapText(s, cx, cy, maxW, lh) {
+  const lines = []; let cur = "";
+  for (const ch of s) { if (ctx.measureText(cur + ch).width > maxW && cur) { lines.push(cur); cur = ch; } else cur += ch; }
+  if (cur) lines.push(cur);
+  lines.forEach((l, i) => ctx.fillText(l, cx, cy + (i - (lines.length - 1) / 2) * lh));
 }
 
 function drawNinjaIcon(x, y, r, on) {
@@ -635,11 +881,11 @@ function drawHud() {
   const st = G.st;
   // 上
   ctx.fillStyle = "#2a1e14"; ctx.fillRect(0, 0, W, HUD_T);
-  button(8, 10, 38, 36, "‹", () => { scene = "select"; }, { size: 22, bg: "#4a3626", fg: "#f3e6cc" });
+  button(8, 10, 38, 36, "‹", goSelect, { size: 22, bg: "#4a3626", fg: "#f3e6cc" });
   ctx.fillStyle = "#f3e6cc"; ctx.font = `900 16px ${SERIF}`; ctx.textAlign = "left"; ctx.textBaseline = "middle";
-  ctx.fillText(`其の${["一", "二", "三", "四", "五"][G.idx]}　${st.name}`, 54, 22);
+  ctx.fillText(`第${G.idx + 1}問　${st.name}`, 54, 22);
   // 忍者アイコン
-  const n = st.ninjas, r = Math.min(10, (W - 160) / n / 2.6);
+  const n = st.ninjas, r = Math.min(10, (W - 64 - 150) / n / 2.5);
   for (let i = 0; i < n; i++) drawNinjaIcon(64 + i * r * 2.5, 44, r, i < G.found);
   // ヒント
   const can = G.state === "play" && G.timeLeft > 10;
@@ -678,7 +924,7 @@ function drawResult() {
   fillRR(px, py, pw, ph, 14, "#f3e6cc");
   ctx.strokeStyle = "#2a1e14"; ctx.lineWidth = 3; rr(px + 6, py + 6, pw - 12, ph - 12, 10); ctx.stroke();
   ctx.fillStyle = win ? "#b03a2e" : "#2a1e14"; ctx.font = `900 34px ${SERIF}`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
-  ctx.fillText(win ? "あっぱれ！" : "時間切れ…", W / 2, py + 50);
+  ctx.fillText(win ? (G.idx === TOTAL - 1 ? "全問クリア！" : "あっぱれ！") : "時間切れ…", W / 2, py + 50);
   ctx.fillStyle = "#4a3626"; ctx.font = `700 15px ${FONT}`;
   ctx.fillText(win ? `残り ${Math.ceil(G.timeLeft)}秒で全員見つけた` : `見つけた忍者 ${G.found} / ${G.st.ninjas}`, W / 2, py + 92);
   if (win) {
@@ -693,17 +939,24 @@ function drawResult() {
   ctx.globalAlpha = 1;
   if (t > 0.6) {
     const bw = pw - 48, bx = px + 24;
-    const last = G.idx === STAGES.length - 1;
-    if (win && !last) button(bx, py + 184, bw, 46, "次の場所へ", () => startStage(G.idx + 1), { size: 17, serif: true });
-    else if (win) button(bx, py + 184, bw, 46, "場所を選ぶ", () => { scene = "select"; }, { size: 17, serif: true });
+    const last = G.idx === TOTAL - 1;
+    if (win && !last) button(bx, py + 184, bw, 46, "次の問題へ", () => startStage(G.idx + 1), { size: 17, serif: true });
+    else if (win) button(bx, py + 184, bw, 46, "問題を選ぶ", goSelect, { size: 17, serif: true });
     else button(bx, py + 184, bw, 46, "もう一度", () => startStage(G.idx), { size: 17, serif: true });
-    button(bx, py + 240, bw, 40, win ? "もう一度" : "場所を選ぶ", win ? () => startStage(G.idx) : () => { scene = "select"; }, { size: 14, bg: "#4a3626", fg: "#f3e6cc" });
+    button(bx, py + 240, bw, 40, win ? "もう一度" : "問題を選ぶ", win ? () => startStage(G.idx) : goSelect, { size: 14, bg: "#4a3626", fg: "#f3e6cc" });
   }
 }
 
 function drawTitle() {
   // 背景：和室のひとこま（忍者がちょっとのぞく）
-  if (!G || G.title !== true) { startStage(0); G.title = true; scene = "title"; G.objs.forEach(o => { o.ninja = false; }); const f = G.objs[0]; f.ninja = true; f.tell = "seam"; const b = G.objs.find(o => o.type === "byobu"); b.ninja = true; b.tell = "scarf"; b.side = 1; G.camX = 0; }
+  if (!G || G.title !== true) {
+    startStage(0); G.title = true; scene = "title";
+    G.objs.forEach(o => { o.ninja = false; o.fake = null; });
+    const hs = G.objs.filter(o => TYPES[o.type].hide);
+    const f = hs[0]; f.ninja = true; f.tell = TYPES[f.type].tells[0];
+    const b = G.objs.find(o => o.type === "byobu") || hs[2]; b.ninja = true; b.tell = TYPES[b.type].tells[0]; b.side = 1;
+    G.camX = 0;
+  }
   G.timeLeft = 99;
   drawBackdrop("washitsu", G.st.W);
   ctx.save(); ctx.translate(0, 0);
@@ -724,6 +977,7 @@ function drawTitle() {
   const a = 0.55 + 0.45 * Math.sin(time * 4);
   ctx.globalAlpha = a; ctx.fillStyle = "#f3e6cc"; ctx.font = `900 ${Math.min(W * 0.055, 21)}px ${SERIF}`; ctx.textAlign = "center"; ctx.fillText("タップではじめる", W / 2, H * 0.72); ctx.globalAlpha = 1;
   ctx.fillStyle = "rgba(243,230,204,.85)"; ctx.font = `700 13px ${FONT}`; ctx.fillText("左右にスライドして、隠れた忍者をタップ", W / 2, H * 0.78);
+  ctx.fillText(`全${TOTAL}問・10の舞台`, W / 2, H * 0.78 + 20);
   button(12, 12, 92, 36, "← 一覧", () => { location.href = "../../"; }, { size: 14, bg: "#f3e6cc" });
 }
 
@@ -731,30 +985,50 @@ function drawSelect() {
   ctx.fillStyle = "#2a1e14"; ctx.fillRect(0, 0, W, H);
   // 畳の目
   ctx.strokeStyle = "rgba(243,230,204,.04)"; ctx.lineWidth = 1; for (let y = 0; y < H; y += 6) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
-  button(12, 12, 92, 36, "← 一覧", () => { location.href = "../../"; }, { size: 14, bg: "#f3e6cc" });
-  button(W - 104, 12, 92, 36, save.sound ? "音 あり" : "音 なし", () => { save.sound = !save.sound; writeSave(); }, { size: 14, bg: save.sound ? "#d6a93a" : "#5a4a3a", fg: save.sound ? "#2a1e14" : "#c9b89e" });
-  ctx.fillStyle = "#f3e6cc"; ctx.font = `900 28px ${SERIF}`; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText("どこを探す？", W / 2, 86);
-  const cw = Math.min(W - 32, 440), x0 = (W - cw) / 2, top = 124, gap = 10;
-  const ch = clamp((H - top - 24 - gap * 4) / 5, 62, 90);
-  STAGES.forEach((st, i) => {
-    const y = top + i * (ch + gap), open = i <= save.cleared, next = i === save.cleared;
-    fillRR(x0, y, cw, ch, 10, open ? "#f3e6cc" : "rgba(243,230,204,.08)");
-    if (next) { ctx.strokeStyle = "#d6a93a"; ctx.lineWidth = 3; rr(x0, y, cw, ch, 10); ctx.stroke(); }
+  const g = selGeom(); selScroll = clamp(selScroll, 0, g.max);
+  const cw = Math.min(W - 24, 520), x0 = (W - cw) / 2, nw = Math.min(104, cw * 0.27), gap = 8;
+  const tw = (cw - nw - gap * (PER - 1)) / PER, th = g.rowH - 12;
+  ctx.save(); ctx.beginPath(); ctx.rect(0, g.top - 6, W, H); ctx.clip();
+  THEME_ORDER.forEach((tk, r) => {
+    const y = g.top + r * g.rowH - selScroll;
+    if (y > H || y + g.rowH < g.top - 6) return;
+    const opened = r * PER <= save.cleared;
     ctx.textAlign = "left"; ctx.textBaseline = "middle";
-    ctx.fillStyle = open ? "#b03a2e" : "rgba(243,230,204,.3)"; ctx.font = `900 ${Math.round(ch * 0.42)}px ${SERIF}`;
-    ctx.fillText(["一", "二", "三", "四", "五"][i], x0 + 16, y + ch / 2);
-    ctx.fillStyle = open ? "#2a1e14" : "rgba(243,230,204,.35)"; ctx.font = `900 18px ${SERIF}`;
-    ctx.fillText(open ? st.name : "？？？", x0 + 22 + ch * 0.45, y + ch / 2 - 9);
-    ctx.font = `700 12px ${FONT}`; ctx.fillStyle = open ? "#6a5440" : "rgba(243,230,204,.3)";
-    ctx.fillText(open ? `忍者 ${st.ninjas}人・${st.time}秒` : "前の場所をクリアすると開く", x0 + 22 + ch * 0.45, y + ch / 2 + 12);
-    if (open) {
-      for (let s = 0; s < 3; s++) {
-        ctx.save(); ctx.translate(x0 + cw - 70 + s * 22, y + ch / 2); ctx.fillStyle = s < (save.best[i] || 0) ? "#d6a93a" : "rgba(74,54,38,.25)"; ctx.beginPath();
-        for (let j = 0; j < 10; j++) { const a = -Math.PI / 2 + j * Math.PI / 5, r2 = j % 2 ? 3.5 : 8.5; ctx.lineTo(Math.cos(a) * r2, Math.sin(a) * r2); } ctx.fill(); ctx.restore();
+    ctx.fillStyle = opened ? "#f3e6cc" : "rgba(243,230,204,.35)"; ctx.font = `900 17px ${SERIF}`;
+    ctx.fillText(opened ? THEMES[tk].name : "？？？", x0 + 2, y + th / 2 - 4);
+    ctx.fillStyle = opened ? "rgba(243,230,204,.6)" : "rgba(243,230,204,.25)"; ctx.font = `700 11px ${FONT}`;
+    ctx.fillText(`${r * PER + 1}〜${r * PER + PER}問`, x0 + 2, y + th / 2 + 15);
+    for (let j = 0; j < PER; j++) {
+      const n = r * PER + j, tx = x0 + nw + j * (tw + gap), ty = y, open = n <= save.cleared, next = n === save.cleared;
+      fillRR(tx, ty, tw, th, 10, open ? "#f3e6cc" : "rgba(243,230,204,.08)");
+      if (next) { ctx.strokeStyle = "#d6a93a"; ctx.lineWidth = 3; rr(tx, ty, tw, th, 10); ctx.stroke(); }
+      ctx.textAlign = "center";
+      ctx.fillStyle = open ? "#b03a2e" : "rgba(243,230,204,.3)"; ctx.font = `900 ${tw < 80 ? 14 : 16}px ${SERIF}`;
+      ctx.fillText(`第${n + 1}問`, tx + tw / 2, ty + th * 0.34);
+      if (open) {
+        for (let s = 0; s < 3; s++) {
+          ctx.save(); ctx.translate(tx + tw / 2 + (s - 1) * 17, ty + th * 0.72); ctx.fillStyle = s < (save.best[n] || 0) ? "#d6a93a" : "rgba(74,54,38,.25)"; ctx.beginPath();
+          for (let k = 0; k < 10; k++) { const a = -Math.PI / 2 + k * Math.PI / 5, r2 = k % 2 ? 2.8 : 7; ctx.lineTo(Math.cos(a) * r2, Math.sin(a) * r2); } ctx.fill(); ctx.restore();
+        }
+        const y0 = Math.max(ty, g.top), h = ty + th - y0;
+        if (h > 12) buttons.push({ x: tx, y: y0, w: tw, h, fn: () => startStage(n) });
+      } else { // 錠前
+        const lx = tx + tw / 2, ly = ty + th * 0.72;
+        ctx.strokeStyle = "rgba(243,230,204,.3)"; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(lx, ly - 4, 4, Math.PI, 0); ctx.stroke();
+        fillRR(lx - 6, ly - 4, 12, 9, 2, "rgba(243,230,204,.3)");
       }
-      buttons.push({ x: x0, y, w: cw, h: ch, fn: () => startStage(i) });
     }
   });
+  ctx.restore();
+  // 上の見出し（スクロールしても残る）
+  ctx.fillStyle = "#2a1e14"; ctx.fillRect(0, 0, W, g.top - 6);
+  button(12, 12, 92, 36, "← 一覧", () => { location.href = "../../"; }, { size: 14, bg: "#f3e6cc" });
+  button(W - 104, 12, 92, 36, save.sound ? "音 あり" : "音 なし", () => { save.sound = !save.sound; writeSave(); }, { size: 14, bg: save.sound ? "#d6a93a" : "#5a4a3a", fg: save.sound ? "#2a1e14" : "#c9b89e" });
+  ctx.fillStyle = "#f3e6cc"; ctx.font = `900 26px ${SERIF}`; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText("どれを探す？", W / 2, 72);
+  const stars = save.best.reduce((a, b) => a + (b || 0), 0);
+  ctx.fillStyle = "rgba(243,230,204,.7)"; ctx.font = `700 12px ${FONT}`; ctx.fillText(`クリア ${Math.min(save.cleared, TOTAL)} / ${TOTAL}問　★ ${stars} / ${TOTAL * 3}`, W / 2, 98);
+  // まだ下に続くときの影
+  if (selScroll < g.max - 2) { const gr = ctx.createLinearGradient(0, H - 40, 0, H); gr.addColorStop(0, "rgba(42,30,20,0)"); gr.addColorStop(1, "rgba(42,30,20,.95)"); ctx.fillStyle = gr; ctx.fillRect(0, H - 40, W, 40); }
 }
 
 // ---------- ループ ----------
@@ -767,7 +1041,7 @@ function loop(now) {
 resize();
 requestAnimationFrame(loop);
 // 確認用：#stage=3 でその場所から
-(function () { const m = location.hash.match(/stage=(\d+)/); if (m) startStage(clamp(parseInt(m[1], 10) - 1, 0, 4)); })();
+(function () { const m = location.hash.match(/stage=(\d+)/); if (m) startStage(clamp(parseInt(m[1], 10) - 1, 0, TOTAL - 1)); })();
 </script>
 </body>
 </html>
